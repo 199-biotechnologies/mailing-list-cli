@@ -1,0 +1,204 @@
+<div align="center">
+
+# Mailing List CLI
+
+**Newsletter campaigns from your terminal. Built for AI agents, not browsers.**
+
+<br />
+
+[![Star this repo](https://img.shields.io/github/stars/199-biotechnologies/mailing-list-cli?style=for-the-badge&logo=github&label=%E2%AD%90%20Star%20this%20repo&color=yellow)](https://github.com/199-biotechnologies/mailing-list-cli/stargazers)
+&nbsp;&nbsp;
+[![Follow @longevityboris](https://img.shields.io/badge/Follow_%40longevityboris-000000?style=for-the-badge&logo=x&logoColor=white)](https://x.com/longevityboris)
+
+<br />
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue?style=for-the-badge)](LICENSE)
+[![Rust](https://img.shields.io/badge/Rust-1.85+-orange?style=for-the-badge&logo=rust&logoColor=white)](https://www.rust-lang.org/)
+[![Status: Spec & Research](https://img.shields.io/badge/Status-Spec_%26_Research-blue?style=for-the-badge)](#status)
+[![Built on Resend](https://img.shields.io/badge/Built_on-Resend-000000?style=for-the-badge)](https://resend.com)
+
+---
+
+A single Rust binary that gives an AI agent (or a human at a terminal) a real mailing list to run. Campaigns, segments, A/B tests, click tracking, double opt-in, hard-bounce auto-suppression, one-click unsubscribe — all on top of [Resend](https://resend.com), all driven by JSON-emitting commands the agent can pick up without an MCP server, schema file, or browser dashboard.
+
+Think Beehiiv or MailChimp, except it lives at `~/.local/bin/mailing-list-cli` and an agent uses it the same way you'd use `git`.
+
+[Why](#why-this-exists) | [Status](#status) | [Planned Commands](#planned-commands) | [Architecture](#architecture) | [Sister Project](#sister-project) | [Research](#research)
+
+</div>
+
+## Why This Exists
+
+AI agents can already send single emails. Running a mailing list is a different sport.
+
+Sending one newsletter to fifty thousand people involves things one-off email tools never touch: deduplicating against a global suppression list, honoring unsubscribes within minutes, watching the soft-bounce counter, throttling the burst so the ESP doesn't suspend you, A/B testing two subject lines on a five-percent slice and promoting the winner, segmenting by tag and engagement, signing the one-click unsubscribe header per RFC 8058, and writing every send result back to local state so the next campaign knows who not to email.
+
+The existing options for an agent are bad:
+
+- **MailChimp / Beehiiv / Klaviyo** — browser-first. Their APIs exist but were designed for Zapier and websites, not for an agent shelling out forty times per second.
+- **Resend's own dashboard** — fine for humans, but the Broadcasts API alone doesn't cover the full list-management surface (no bulk import, no programmatic suppression list, no double opt-in workflow, no A/B testing, no segments-by-engagement).
+- **MCP servers wrapping the above** — a 32× context overhead per call versus the same operation as a CLI command, and the agent has to learn a new tool schema for every platform.
+
+`mailing-list-cli` is the missing layer. It wraps Resend's Broadcasts / Audiences / Contacts / Topics / Templates APIs, fills in everything Resend doesn't ship (bulk import, double opt-in, suppression mirror, A/B testing, engagement-based segments, rate-limit-aware backoff), and exposes all of it as a single self-describing binary. An agent runs `mailing-list-cli agent-info` once, learns every command, and gets to work.
+
+## Status
+
+> **Spec and research phase. No binary yet.**
+>
+> This repo currently contains the design research — five deep dives covering modern newsletter platforms, marketing tools, Resend's native API surface, deliverability and compliance at scale, and email template formats for AI agents. The Rust implementation lands once the spec is written and approved.
+>
+> Star the repo to follow along, or read [the research](./research) to see what we're building toward.
+
+## Planned Commands
+
+Synthesized from the research swarm. Directional, not final — every entry below is grounded in a feature real list operators rely on day-to-day.
+
+### Lists, Contacts, Tags
+
+| Command | What it does |
+|---|---|
+| `list create <name>` | Create a list (Resend audience) |
+| `list ls` | Show all lists with subscriber counts |
+| `contact add <email> --list <id>` | Add a contact |
+| `contact import <file.csv> --list <id>` | Bulk import with rate-limit-aware chunking |
+| `contact tag <email> <tag>` | Tag a contact |
+| `contact ls --filter <expr>` | Filter contacts by tag, list, status, engagement |
+| `contact erase <email>` | GDPR hard-delete (PII removed, suppression entry retained) |
+
+### Segments
+
+| Command | What it does |
+|---|---|
+| `segment create <name> --filter <expr>` | Save a dynamic segment from a filter expression |
+| `segment ls` | All segments with live member counts |
+| `segment members <id>` | List currently-matching contacts |
+
+Filter expressions are boolean: `tag:vip AND opened_last:30d AND NOT bounced`. Segments re-evaluate at send time so a "last 30 days engaged" segment is always fresh.
+
+### Templates
+
+| Command | What it does |
+|---|---|
+| `template create <name>` | Scaffold a new MJML template with merge tag schema |
+| `template ls` | List local templates |
+| `template show <name>` | Render to HTML for inspection |
+| `template lint <name>` | Validate MJML, check merge tag schema, render preview |
+| `template guidelines` | Print the agent authoring guide (rules, examples, gotchas) |
+
+Templates live in a local SQLite store. The CLI ships explicit guidelines an agent loads before authoring, written so an LLM produces output that actually renders in Outlook desktop.
+
+### Broadcasts (Campaigns)
+
+| Command | What it does |
+|---|---|
+| `broadcast create --template <name> --to <segment>` | Stage a broadcast |
+| `broadcast preview <id> --to <email>` | Send a single test |
+| `broadcast schedule <id> --at <time>` | Schedule for later |
+| `broadcast send <id>` | Send now |
+| `broadcast cancel <id>` | Cancel a scheduled broadcast |
+| `broadcast ab <id> --vary subject --variants 2 --winner-by opens` | Configure A/B test |
+| `broadcast ls` | Recent broadcasts and their statuses |
+
+### Analytics
+
+| Command | What it does |
+|---|---|
+| `report show <broadcast-id>` | Opens, clicks, bounces, unsubscribes, complaints, CTR |
+| `report links <broadcast-id>` | Click count per link |
+| `report engagement --segment <id>` | Engagement scores across a segment |
+| `report deliverability` | Domain health: bounce rate, complaint rate, DMARC pass rate |
+
+### Compliance & Hygiene
+
+| Command | What it does |
+|---|---|
+| `optin start <email> --list <id>` | Send a double opt-in confirmation |
+| `optin verify <token>` | Confirm an opt-in |
+| `unsubscribe <email>` | Honor an unsubscribe (writes to global suppression) |
+| `suppression ls` | View the global suppression list |
+| `suppression import <file>` | Import suppressions from another platform |
+| `dnscheck <domain>` | Verify SPF / DKIM / DMARC alignment before first send |
+
+### Webhook ingestion
+
+| Command | What it does |
+|---|---|
+| `webhook listen --port <n>` | Run a local receiver that mirrors Resend events into local state |
+| `webhook backfill` | Backfill recent events from Resend's API |
+
+### Agent tooling
+
+| Command | What it does |
+|---|---|
+| `agent-info` | Self-describing JSON manifest of every command, flag, and exit code |
+| `skill install` | Drop the embedded skill file into Claude / Codex / Gemini paths |
+| `update` | Self-update from GitHub Releases |
+
+## Architecture
+
+Three layers, each replaceable.
+
+```
+┌──────────────────────────────────────┐
+│           Your Agent / You           │
+│         (Claude, Codex, Gemini)      │
+└────────────────┬─────────────────────┘
+                 │  CLI commands, JSON in/out
+                 ▼
+┌──────────────────────────────────────┐
+│           mailing-list-cli           │
+│   campaigns · segments · A/B · opt-in │
+│   suppression · analytics · templates │
+└──────┬─────────┬────────┬────────────┘
+       │         │        │
+   ┌───▼──┐  ┌───▼────┐ ┌─▼──────────┐
+   │SQLite│  │Resend  │ │MJML +      │
+   │local │  │API     │ │Handlebars  │
+   │state │  │(send + │ │(templates) │
+   │      │  │webhook)│ │            │
+   └──────┘  └────────┘ └────────────┘
+```
+
+- **SQLite local state**: every contact, every event, every suppression entry, every template. The local DB is the source of truth for everything Resend doesn't expose programmatically (suppression list, double opt-in tokens, engagement history, segment membership).
+- **Resend** handles delivery, hosted unsubscribe pages, and basic open/click tracking. The CLI never reinvents what Resend already does well.
+- **MJML + Handlebars** for templates, compiled in-process via the [`mrml`](https://crates.io/crates/mrml) Rust crate — no Node, no external runtime. Merge tags are Mustache-style `{{ first_name }}` because that's the syntax LLMs author most reliably.
+
+Built following the [agent-cli-framework](https://github.com/199-biotechnologies/agent-cli-framework) patterns: structured JSON output (auto-detected via `IsTerminal`), semantic exit codes (`0/1/2/3/4`), self-describing `agent-info`, no interactive prompts, ever.
+
+## Sister Project
+
+[`email-cli`](https://github.com/199-biotechnologies/email-cli) — the 1:1 messaging counterpart. Send, reply, draft, sync. Same conventions, same agent-friendly philosophy. Use both: `email-cli` for personal correspondence, `mailing-list-cli` for newsletters and campaigns.
+
+## Research
+
+Five research dossiers ground the design. Read them in [/research](./research):
+
+1. [Modern creator newsletters](./research/01-modern-creator-newsletters.md) — Beehiiv, Buttondown, Substack
+2. [Marketing platforms](./research/02-marketing-platforms.md) — MailChimp, MailerLite, Kit
+3. [Resend native capabilities](./research/03-resend-native.md) — what's already there vs the gap to fill
+4. [Deliverability and compliance](./research/04-deliverability-compliance.md) — the non-negotiables for safe scale
+5. [Email templates for agents](./research/05-templates.md) — format choice, merge syntax, authoring guidelines
+
+## Contributing
+
+The spec isn't written yet. If you want to shape it, open a discussion or comment on the research files. Once the binary lands, contributions to commands, tests, and docs are welcome.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
+
+---
+
+<div align="center">
+
+Built by [Boris Djordjevic](https://github.com/longevityboris) at [Paperfoot AI](https://paperfoot.com)
+
+<br />
+
+**If this is useful or interesting:**
+
+[![Star this repo](https://img.shields.io/github/stars/199-biotechnologies/mailing-list-cli?style=for-the-badge&logo=github&label=%E2%AD%90%20Star%20this%20repo&color=yellow)](https://github.com/199-biotechnologies/mailing-list-cli/stargazers)
+&nbsp;&nbsp;
+[![Follow @longevityboris](https://img.shields.io/badge/Follow_%40longevityboris-000000?style=for-the-badge&logo=x&logoColor=white)](https://x.com/longevityboris)
+
+</div>
