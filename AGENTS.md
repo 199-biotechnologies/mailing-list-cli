@@ -28,6 +28,13 @@ mailing-list-cli agent-info
 
 That command will return a JSON manifest of every subcommand, every flag, every exit code. No documentation drift, no MCP server, no schema file an agent has to load up front.
 
-## Sister tool
+## Required dependency: email-cli
 
-For 1:1 email (send, reply, draft, sync), use [`email-cli`](https://github.com/199-biotechnologies/email-cli). Same author, same conventions, same Resend backend. The two tools coexist on `$PATH` and an agent uses both — `email-cli` for personal correspondence, `mailing-list-cli` for newsletters and campaigns.
+`mailing-list-cli` does **not** talk to Resend directly. Every send, every audience operation, every event read goes through [`email-cli`](https://github.com/199-biotechnologies/email-cli), which is the sole Resend API client. Both binaries must be on `$PATH`.
+
+This split exists so neither tool has to do the other's job:
+
+- `email-cli` owns the Resend API surface, accounts, profiles, transports, the inbox, the webhook listener.
+- `mailing-list-cli` owns campaigns, segmentation, templates, suppression, double opt-in, A/B testing, analytics.
+
+For an agent: use `email-cli` for personal correspondence, `mailing-list-cli` for newsletters and campaigns. They cooperate on the same Resend account but each one stays in its lane.

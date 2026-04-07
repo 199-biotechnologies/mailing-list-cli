@@ -1,8 +1,10 @@
 <div align="center">
 
+<img src="./assets/og-card.png" alt="mailing-list-cli — newsletter campaigns from your terminal" width="100%" />
+
 # Mailing List CLI
 
-**Newsletter campaigns from your terminal. Built for AI agents, not browsers.**
+**Newsletter campaigns from your terminal. Built for AI agents.**
 
 <br />
 
@@ -19,7 +21,9 @@
 
 ---
 
-A single Rust binary that gives an AI agent (or a human at a terminal) a real mailing list to run. Campaigns, segments, A/B tests, click tracking, double opt-in, hard-bounce auto-suppression, one-click unsubscribe — all on top of [Resend](https://resend.com), all driven by JSON-emitting commands the agent can pick up without an MCP server, schema file, or browser dashboard.
+A single Rust binary that gives an AI agent (or a human at a terminal) a real mailing list to run. Campaigns, segments, A/B tests, click tracking, double opt-in, hard-bounce auto-suppression, one-click unsubscribe — all driven by JSON-emitting commands the agent can pick up without an MCP server, schema file, or browser dashboard.
+
+`mailing-list-cli` is the orchestration layer. It owns campaigns, segments, templates, suppression, double opt-in, A/B testing, and analytics. It does **not** talk to [Resend](https://resend.com) directly — every send, every audience operation, every webhook event flows through its sister tool [`email-cli`](https://github.com/199-biotechnologies/email-cli), which is the sole Resend API client. Two binaries, one job each.
 
 Think Beehiiv or MailChimp, except it lives at `~/.local/bin/mailing-list-cli` and an agent uses it the same way you'd use `git`.
 
@@ -39,7 +43,7 @@ The existing options for an agent are bad:
 - **Resend's own dashboard** — fine for humans, but the Broadcasts API alone doesn't cover the full list-management surface (no bulk import, no programmatic suppression list, no double opt-in workflow, no A/B testing, no segments-by-engagement).
 - **MCP servers wrapping the above** — a 32× context overhead per call versus the same operation as a CLI command, and the agent has to learn a new tool schema for every platform.
 
-`mailing-list-cli` is the missing layer. It wraps Resend's Broadcasts / Audiences / Contacts / Topics / Templates APIs, fills in everything Resend doesn't ship (bulk import, double opt-in, suppression mirror, A/B testing, engagement-based segments, rate-limit-aware backoff), and exposes all of it as a single self-describing binary. An agent runs `mailing-list-cli agent-info` once, learns every command, and gets to work.
+`mailing-list-cli` is the missing layer. It owns the campaign / segmentation / template / suppression / opt-in / A/B / analytics surface. For the actual SMTP-side work — sending, audience CRUD, webhook ingestion, Resend API authentication — it shells out to [`email-cli`](https://github.com/199-biotechnologies/email-cli). An agent runs `mailing-list-cli agent-info` once, learns every command, and gets to work.
 
 ## Status
 
@@ -139,29 +143,40 @@ Templates live in a local SQLite store. The CLI ships explicit guidelines an age
 Three layers, each replaceable.
 
 ```
-┌──────────────────────────────────────┐
-│           Your Agent / You           │
-│         (Claude, Codex, Gemini)      │
-└────────────────┬─────────────────────┘
+┌──────────────────────────────────────────┐
+│             Your Agent / You             │
+│         (Claude, Codex, Gemini)          │
+└────────────────┬─────────────────────────┘
                  │  CLI commands, JSON in/out
                  ▼
-┌──────────────────────────────────────┐
-│           mailing-list-cli           │
-│   campaigns · segments · A/B · opt-in │
-│   suppression · analytics · templates │
-└──────┬─────────┬────────┬────────────┘
-       │         │        │
-   ┌───▼──┐  ┌───▼────┐ ┌─▼──────────┐
-   │SQLite│  │Resend  │ │MJML +      │
-   │local │  │API     │ │Handlebars  │
-   │state │  │(send + │ │(templates) │
-   │      │  │webhook)│ │            │
-   └──────┘  └────────┘ └────────────┘
+┌──────────────────────────────────────────┐
+│             mailing-list-cli             │
+│   campaigns · segments · A/B · opt-in    │
+│   suppression · analytics · templates    │
+└────────────┬─────────────────┬───────────┘
+             │                 │
+             │  shells out     │  reads/writes
+             │  for sending    │  local state
+             ▼                 ▼
+   ┌──────────────────┐  ┌────────────┐
+   │     email-cli    │  │   SQLite   │
+   │ • Resend API     │  │ templates  │
+   │ • send / batch   │  │ campaigns  │
+   │ • audiences      │  │ suppression│
+   │ • contacts       │  │ events     │
+   │ • events / hooks │  │ optin tok. │
+   └─────────┬────────┘  └────────────┘
+             │
+             ▼
+       ┌──────────┐
+       │  Resend  │
+       └──────────┘
 ```
 
-- **SQLite local state**: every contact, every event, every suppression entry, every template. The local DB is the source of truth for everything Resend doesn't expose programmatically (suppression list, double opt-in tokens, engagement history, segment membership).
-- **Resend** handles delivery, hosted unsubscribe pages, and basic open/click tracking. The CLI never reinvents what Resend already does well.
-- **MJML + Handlebars** for templates, compiled in-process via the [`mrml`](https://crates.io/crates/mrml) Rust crate — no Node, no external runtime. Merge tags are Mustache-style `{{ first_name }}` because that's the syntax LLMs author most reliably.
+- **`mailing-list-cli` is the orchestration layer.** It composes campaigns, computes segments, renders templates, enforces suppression, runs A/B tests, and aggregates analytics. It has zero Resend code.
+- **`email-cli` is the transport layer.** It is the only binary that talks to Resend's API. `mailing-list-cli` shells out to it for every send, every audience operation, and every event read.
+- **Local SQLite** stores the things `email-cli` doesn't track: templates, campaign metadata, the suppression list, double opt-in tokens, segment definitions, engagement aggregates, and a mirror of recent events polled from `email-cli`.
+- **MJML + Handlebars** for templates, compiled in-process via the [`mrml`](https://crates.io/crates/mrml) Rust crate — no Node, no external runtime. Merge tags are Mustache-style `{{ first_name }}` because that's the syntax LLMs author most reliably. Templates render to HTML locally before being passed to `email-cli` as a send body.
 
 Built following the [agent-cli-framework](https://github.com/199-biotechnologies/agent-cli-framework) patterns: structured JSON output (auto-detected via `IsTerminal`), semantic exit codes (`0/1/2/3/4`), self-describing `agent-info`, no interactive prompts, ever.
 

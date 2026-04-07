@@ -15,7 +15,11 @@ These dossiers feed into the design spec (next step) and ultimately the implemen
 ## Top-line findings
 
 - **The 80/20 of a mailing list collapses to ~8 commands**: compose+send, contact CRUD/import, tags+segments, send-to-segment, subject A/B, per-campaign analytics, automatic suppression, basic welcome drip. Everything else is differentiator.
-- **Resend already provides** Broadcasts, Audiences, Contacts, Topics, Templates, hosted unsubscribe, open/click tracking, and an 11-event webhook stream including bounce subtypes. Lean on these.
-- **Resend does not provide** bulk CSV import via API, programmatic suppression list access, double opt-in workflow, A/B testing, engagement-based segmentation, in-flight broadcast pause/resume, or geo/device enrichment. The CLI must build these.
+- **Resend already provides** Broadcasts, Audiences, Contacts, Topics, Templates, hosted unsubscribe, open/click tracking, and an 11-event webhook stream including bounce subtypes. We lean on these — but indirectly, through [`email-cli`](https://github.com/199-biotechnologies/email-cli), which is the sole Resend API client. `mailing-list-cli` never opens an HTTP connection to Resend.
+- **Resend does not provide** bulk CSV import via API, programmatic suppression list access, double opt-in workflow, A/B testing, engagement-based segmentation, in-flight broadcast pause/resume, or geo/device enrichment. These are exactly the gaps `mailing-list-cli` fills.
 - **Twelve compliance features are non-negotiable** for safe operation at 10k+ subscribers, including a global suppression list enforced at dispatch time, RFC 8058 one-click unsubscribe, double opt-in by default, GDPR erasure, and CAN-SPAM physical address injection.
 - **For templates, the right pick is MJML compiled in-process via the `mrml` Rust crate**, with Handlebars-style `{{ snake_case }}` merge tags. No Node dependency, no external runtime, and the format an LLM can author most reliably.
+
+## Architecture note
+
+The original architectural plan called for `mailing-list-cli` to wrap Resend's API directly. After more thought, the cleaner split is for `mailing-list-cli` to shell out to `email-cli` for every Resend touchpoint. This keeps `email-cli` as the only binary with Resend credentials and rate-limit handling, and lets `mailing-list-cli` stay focused on the orchestration / segmentation / suppression / template / analytics layer that no transactional email tool covers. The five research dossiers below remain valid — what changes is the implementation channel, not the feature set.
