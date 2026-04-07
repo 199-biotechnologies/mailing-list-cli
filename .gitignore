@@ -8,6 +8,9 @@ Cargo.lock.bak
 /.vscode
 *.swp
 
+# Claude Code harness cache
+.claude/
+
 # OS
 .DS_Store
 Thumbs.db
