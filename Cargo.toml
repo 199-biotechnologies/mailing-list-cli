@@ -1,0 +1,32 @@
+[package]
+name = "mailing-list-cli"
+version = "0.0.1"
+edition = "2024"
+rust-version = "1.85"
+description = "Newsletter and mailing list management from the terminal. Built for AI agents on top of email-cli."
+license = "MIT"
+repository = "https://github.com/199-biotechnologies/mailing-list-cli"
+homepage = "https://github.com/199-biotechnologies/mailing-list-cli"
+keywords = ["mailing-list", "newsletter", "cli", "resend", "agent"]
+categories = ["command-line-utilities", "email"]
+
+[dependencies]
+anyhow = "1.0"
+chrono = { version = "0.4", features = ["clock", "serde"] }
+clap = { version = "4.5", features = ["derive", "env"] }
+dirs = "6.0"
+rusqlite = { version = "0.37", features = ["bundled", "chrono"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2.0"
+toml = "0.8"
+
+[dev-dependencies]
+assert_cmd = "2.0"
+predicates = "3.1"
+tempfile = "3.10"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true

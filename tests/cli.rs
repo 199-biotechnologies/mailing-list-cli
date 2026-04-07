@@ -1,0 +1,128 @@
+use assert_cmd::Command;
+use predicates::prelude::*;
+use serde_json::Value;
+use std::path::PathBuf;
+use tempfile::TempDir;
+
+fn fixture_path(name: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join(name)
+}
+
+fn isolated_env() -> TempDir {
+    TempDir::new().unwrap()
+}
+
+#[test]
+fn agent_info_returns_valid_json() {
+    let mut cmd = Command::cargo_bin("mailing-list-cli").unwrap();
+    let out = cmd.args(["--json", "agent-info"]).assert().success();
+    let stdout = String::from_utf8(out.get_output().stdout.clone()).unwrap();
+    let value: Value = serde_json::from_str(&stdout).expect("agent-info must be JSON");
+    assert_eq!(value["name"], "mailing-list-cli");
+    assert!(value["commands"].is_object());
+    assert!(
+        value["exit_codes"]["2"]
+            .as_str()
+            .unwrap()
+            .contains("Config")
+    );
+}
+
+#[test]
+fn agent_info_lists_health_command() {
+    let mut cmd = Command::cargo_bin("mailing-list-cli").unwrap();
+    let out = cmd.args(["--json", "agent-info"]).assert().success();
+    let stdout = String::from_utf8(out.get_output().stdout.clone()).unwrap();
+    let value: Value = serde_json::from_str(&stdout).unwrap();
+    assert!(value["commands"]["health"].is_string());
+}
+
+#[test]
+fn version_flag_exits_zero() {
+    let mut cmd = Command::cargo_bin("mailing-list-cli").unwrap();
+    cmd.arg("--version")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("mailing-list-cli"));
+}
+
+#[test]
+fn help_flag_exits_zero() {
+    let mut cmd = Command::cargo_bin("mailing-list-cli").unwrap();
+    cmd.arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("mailing list management"));
+}
+
+#[test]
+fn health_with_stub_email_cli_succeeds() {
+    let stub = fixture_path("stub-email-cli.sh");
+    assert!(stub.exists(), "stub-email-cli.sh must exist at {:?}", stub);
+
+    let tmp = isolated_env();
+    let config_path = tmp.path().join("config.toml");
+    std::fs::write(
+        &config_path,
+        format!(
+            r#"
+[sender]
+physical_address = "123 Test St"
+
+[email_cli]
+path = "{}"
+profile = "default"
+"#,
+            stub.display()
+        ),
+    )
+    .unwrap();
+
+    let db_path = tmp.path().join("state.db");
+
+    let mut cmd = Command::cargo_bin("mailing-list-cli").unwrap();
+    cmd.env("MLC_CONFIG_PATH", &config_path)
+        .env("MLC_DB_PATH", &db_path)
+        .args(["--json", "health"]);
+    let out = cmd.assert().success();
+    let stdout = String::from_utf8(out.get_output().stdout.clone()).unwrap();
+    let value: Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(value["status"], "success");
+    assert_eq!(value["data"]["status"], "ok");
+}
+
+#[test]
+fn health_without_email_cli_fails_with_exit_2() {
+    let tmp = isolated_env();
+    let config_path = tmp.path().join("config.toml");
+    std::fs::write(
+        &config_path,
+        r#"
+[sender]
+physical_address = "123 Test St"
+
+[email_cli]
+path = "/definitely/not/a/real/path/email-cli"
+profile = "default"
+"#,
+    )
+    .unwrap();
+    let db_path = tmp.path().join("state.db");
+
+    let mut cmd = Command::cargo_bin("mailing-list-cli").unwrap();
+    cmd.env("MLC_CONFIG_PATH", &config_path)
+        .env("MLC_DB_PATH", &db_path)
+        .args(["--json", "health"]);
+    cmd.assert().failure().code(2);
+}
+
+#[test]
+fn unknown_command_returns_failure() {
+    let mut cmd = Command::cargo_bin("mailing-list-cli").unwrap();
+    cmd.arg("definitely-not-a-real-subcommand")
+        .assert()
+        .failure();
+}
