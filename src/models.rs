@@ -21,9 +21,18 @@ pub struct Contact {
 }
 
 #[derive(Debug, Clone, Serialize)]
-#[allow(dead_code)] // Wired up in Task 8
 pub struct Tag {
     pub id: i64,
     pub name: String,
     pub member_count: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[allow(dead_code)] // Wired up in Task 11
+pub struct Field {
+    pub id: i64,
+    pub key: String,
+    pub r#type: String, // "text" | "number" | "date" | "bool" | "select"
+    pub options: Option<Vec<String>>, // deserialized from options_json for select
+    pub created_at: String,
 }

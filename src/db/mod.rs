@@ -381,6 +381,127 @@ impl Db {
             .map_err(query_err)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(query_err)
     }
+
+    // ─── Field operations ──────────────────────────────────────────────
+
+    #[allow(dead_code)] // Wired up in Task 11
+    pub fn field_create(
+        &self,
+        key: &str,
+        ty: &str,
+        options: Option<&[String]>,
+    ) -> Result<i64, AppError> {
+        if !is_snake_case(key) {
+            return Err(AppError::BadInput {
+                code: "invalid_field_key".into(),
+                message: format!("field key '{key}' must be snake_case"),
+                suggestion:
+                    "Use lowercase letters, digits, and underscores only (e.g. `company_size`)"
+                        .into(),
+            });
+        }
+        if !matches!(ty, "text" | "number" | "date" | "bool" | "select") {
+            return Err(AppError::BadInput {
+                code: "invalid_field_type".into(),
+                message: format!("field type '{ty}' is not valid"),
+                suggestion: "Use one of: text, number, date, bool, select".into(),
+            });
+        }
+        if ty == "select" && options.map(|o| o.is_empty()).unwrap_or(true) {
+            return Err(AppError::BadInput {
+                code: "select_requires_options".into(),
+                message: "--type select requires --options to be non-empty".into(),
+                suggestion: "Rerun with --options \"red,green,blue\"".into(),
+            });
+        }
+        let options_json = options.map(|o| serde_json::to_string(o).unwrap());
+        let now = chrono::Utc::now().to_rfc3339();
+        self.conn
+            .execute(
+                "INSERT INTO field (key, type, options_json, created_at) VALUES (?1, ?2, ?3, ?4)",
+                params![key, ty, options_json, now],
+            )
+            .map_err(|e| {
+                if e.to_string().contains("UNIQUE constraint failed") {
+                    AppError::BadInput {
+                        code: "field_already_exists".into(),
+                        message: format!("a field named '{key}' already exists"),
+                        suggestion: "Run `mailing-list-cli field ls` to see existing fields".into(),
+                    }
+                } else {
+                    query_err(e)
+                }
+            })?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    #[allow(dead_code)] // Wired up in Task 11
+    pub fn field_all(&self) -> Result<Vec<crate::models::Field>, AppError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, key, type, options_json, created_at FROM field ORDER BY key ASC")
+            .map_err(query_err)?;
+        let rows = stmt
+            .query_map([], |row| {
+                let options_json: Option<String> = row.get(3)?;
+                let options = options_json
+                    .as_deref()
+                    .map(|s| serde_json::from_str::<Vec<String>>(s).unwrap_or_default());
+                Ok(crate::models::Field {
+                    id: row.get(0)?,
+                    key: row.get(1)?,
+                    r#type: row.get(2)?,
+                    options,
+                    created_at: row.get(4)?,
+                })
+            })
+            .map_err(query_err)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(query_err)
+    }
+
+    #[allow(dead_code)] // Wired up in Task 11
+    pub fn field_get(&self, key: &str) -> Result<Option<crate::models::Field>, AppError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, key, type, options_json, created_at FROM field WHERE key = ?1")
+            .map_err(query_err)?;
+        let row = stmt.query_row(params![key], |row| {
+            let options_json: Option<String> = row.get(3)?;
+            let options = options_json
+                .as_deref()
+                .map(|s| serde_json::from_str::<Vec<String>>(s).unwrap_or_default());
+            Ok(crate::models::Field {
+                id: row.get(0)?,
+                key: row.get(1)?,
+                r#type: row.get(2)?,
+                options,
+                created_at: row.get(4)?,
+            })
+        });
+        match row {
+            Ok(f) => Ok(Some(f)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(query_err(e)),
+        }
+    }
+
+    #[allow(dead_code)] // Wired up in Task 11
+    pub fn field_delete(&self, key: &str) -> Result<bool, AppError> {
+        let affected = self
+            .conn
+            .execute("DELETE FROM field WHERE key = ?1", params![key])
+            .map_err(query_err)?;
+        Ok(affected > 0)
+    }
+}
+
+#[allow(dead_code)] // Used by field_create; called from bin in Task 11
+fn is_snake_case(s: &str) -> bool {
+    !s.is_empty()
+        && s.chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+        && !s.starts_with('_')
+        && !s.ends_with('_')
 }
 
 fn query_err(e: rusqlite::Error) -> AppError {
@@ -543,5 +664,50 @@ mod tests {
         db.contact_tag_add(contact, tag_id).unwrap();
         assert!(db.tag_delete("vip").unwrap());
         assert!(db.contact_tags_for(contact).unwrap().is_empty());
+    }
+
+    #[test]
+    fn field_create_validates_snake_case() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let db = Db::open_at(tmp.path()).unwrap();
+        assert!(db.field_create("Company Size", "text", None).is_err());
+        assert!(db.field_create("company-size", "text", None).is_err());
+        assert!(db.field_create("company_size", "text", None).is_ok());
+    }
+
+    #[test]
+    fn field_create_select_requires_options() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let db = Db::open_at(tmp.path()).unwrap();
+        assert!(db.field_create("plan", "select", None).is_err());
+        assert!(
+            db.field_create("plan", "select", Some(&["free".into(), "pro".into()]))
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn field_all_sorted_by_key_with_options() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let db = Db::open_at(tmp.path()).unwrap();
+        db.field_create("zebra", "text", None).unwrap();
+        db.field_create("apple", "select", Some(&["a".into(), "b".into()]))
+            .unwrap();
+        let fields = db.field_all().unwrap();
+        assert_eq!(fields.len(), 2);
+        assert_eq!(fields[0].key, "apple");
+        assert_eq!(
+            fields[0].options.as_ref().unwrap(),
+            &vec!["a".to_string(), "b".to_string()]
+        );
+    }
+
+    #[test]
+    fn field_delete_removes_and_cascades() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let db = Db::open_at(tmp.path()).unwrap();
+        db.field_create("company", "text", None).unwrap();
+        assert!(db.field_delete("company").unwrap());
+        assert!(db.field_get("company").unwrap().is_none());
     }
 }
