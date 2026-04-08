@@ -1418,11 +1418,11 @@ impl Db {
 
     #[allow(dead_code)]
     pub fn kv_get(&self, key: &str) -> Result<Option<String>, AppError> {
-        match self.conn.query_row(
-            "SELECT value FROM kv WHERE key = ?1",
-            params![key],
-            |r| r.get::<_, String>(0),
-        ) {
+        match self
+            .conn
+            .query_row("SELECT value FROM kv WHERE key = ?1", params![key], |r| {
+                r.get::<_, String>(0)
+            }) {
             Ok(v) => Ok(Some(v)),
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
             Err(e) => Err(query_err(e)),

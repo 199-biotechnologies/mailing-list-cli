@@ -1,8 +1,8 @@
 /// Embedded migrations applied in order. The migration runner skips already-applied versions.
 pub const MIGRATIONS: &[(&str, &str)] = &[
     (
-    "0001_initial",
-    r#"
+        "0001_initial",
+        r#"
     CREATE TABLE list (
         id INTEGER PRIMARY KEY,
         name TEXT NOT NULL UNIQUE,
