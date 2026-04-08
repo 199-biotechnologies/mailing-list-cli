@@ -38,38 +38,55 @@ pub fn audit_log_path() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    // Env vars are process-global. Cargo's default test runner uses a
+    // thread pool, so two tests mutating the same var in parallel race.
+    // This mutex serialises every env-mutating test in this module without
+    // forcing `cargo test -- --test-threads=1` on the whole suite.
+    //
+    // The historical fix was "always use --test-threads=1"; CI was not
+    // doing that, so v0.2.0 → v0.2.1 hit the race intermittently. This
+    // mutex makes the test file race-free on its own.
+    static ENV_MUTEX: Mutex<()> = Mutex::new(());
 
     #[test]
     fn config_path_respects_env_override() {
-        // SAFETY: tests are single-threaded for env mutation
+        let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        // SAFETY: serialised via ENV_MUTEX
         unsafe {
             std::env::set_var("MLC_CONFIG_PATH", "/tmp/test-config.toml");
         }
-        assert_eq!(config_path(), PathBuf::from("/tmp/test-config.toml"));
+        let result = config_path();
         unsafe {
             std::env::remove_var("MLC_CONFIG_PATH");
         }
+        assert_eq!(result, PathBuf::from("/tmp/test-config.toml"));
     }
 
     #[test]
     fn db_path_respects_env_override() {
+        let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         unsafe {
             std::env::set_var("MLC_DB_PATH", "/tmp/test-state.db");
         }
-        assert_eq!(db_path(), PathBuf::from("/tmp/test-state.db"));
+        let result = db_path();
         unsafe {
             std::env::remove_var("MLC_DB_PATH");
         }
+        assert_eq!(result, PathBuf::from("/tmp/test-state.db"));
     }
 
     #[test]
     fn audit_log_is_sibling_of_db() {
+        let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         unsafe {
             std::env::set_var("MLC_DB_PATH", "/tmp/foo/state.db");
         }
-        assert_eq!(audit_log_path(), PathBuf::from("/tmp/foo/audit.log"));
+        let result = audit_log_path();
         unsafe {
             std::env::remove_var("MLC_DB_PATH");
         }
+        assert_eq!(result, PathBuf::from("/tmp/foo/audit.log"));
     }
 }

@@ -43,4 +43,9 @@ jobs:
         run: cargo build --release --verbose
 
       - name: Test
-        run: cargo test --all-features --verbose
+        # --test-threads=1 is belt+suspenders: the paths::tests race is now
+        # fixed via an in-module Mutex (src/paths.rs), but running serially
+        # is a negligible cost on a 159-test suite and protects against
+        # future env-var tests landing before someone wraps them in the
+        # same mutex.
+        run: cargo test --all-features --verbose -- --test-threads=1
