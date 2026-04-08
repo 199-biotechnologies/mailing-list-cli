@@ -419,6 +419,50 @@ impl EmailCli {
         Ok(id)
     }
 
+    /// Shell out to `email-cli email list --limit N [--after cursor]`.
+    /// Returns the parsed response as a `serde_json::Value`.
+    #[allow(dead_code)]
+    pub fn email_list(&self, limit: usize, after: Option<&str>) -> Result<Value, AppError> {
+        self.throttle();
+        let mut args: Vec<String> = vec![
+            "--json".into(),
+            "email".into(),
+            "list".into(),
+            "--limit".into(),
+            limit.to_string(),
+        ];
+        if let Some(cursor) = after {
+            args.push("--after".into());
+            args.push(cursor.into());
+        }
+        let output = Command::new(&self.path)
+            .args(&args)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .map_err(|e| AppError::Config {
+                code: "email_cli_invoke_failed".into(),
+                message: format!("could not run email-cli email list: {e}"),
+                suggestion: "Check that email-cli is on PATH".into(),
+            })?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(AppError::Transient {
+                code: "email_list_failed".into(),
+                message: format!(
+                    "email-cli email list failed: {}",
+                    stderr.lines().next().unwrap_or("(no stderr)")
+                ),
+                suggestion: "Run `email-cli profile test` to verify connectivity".into(),
+            });
+        }
+        serde_json::from_slice(&output.stdout).map_err(|e| AppError::Transient {
+            code: "email_list_parse".into(),
+            message: format!("invalid JSON from email-cli email list: {e}"),
+            suggestion: "Check email-cli version compatibility".into(),
+        })
+    }
+
     /// Run `email-cli --json profile test <profile>`.
     #[allow(dead_code)]
     pub fn profile_test(&self) -> Result<Value, AppError> {

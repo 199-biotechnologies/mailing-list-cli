@@ -65,7 +65,12 @@ case "$1" in
         ;;
     "email")
         if [ "$2" = "list" ] || [ "$2" = "ls" ]; then
-            echo '{"version":"1","status":"success","data":{"object":"list","has_more":false,"data":[]}}'
+            # If MLC_STUB_EMAIL_LIST_JSON is set, emit that, else empty
+            if [ -n "$MLC_STUB_EMAIL_LIST_JSON" ]; then
+                echo "$MLC_STUB_EMAIL_LIST_JSON"
+            else
+                echo '{"version":"1","status":"success","data":{"object":"list","has_more":false,"data":[]}}'
+            fi
             exit 0
         fi
         ;;
