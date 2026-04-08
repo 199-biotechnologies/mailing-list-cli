@@ -184,7 +184,10 @@ pub fn send_broadcast(id: i64) -> Result<PipelineResult, AppError> {
         let batch_path = cache_dir.join(format!("broadcast-{id}-chunk-{chunk_idx}.json"));
         write_batch_file(&entries, &batch_path)?;
 
-        match cli.batch_send(&batch_path) {
+        // Pass the recipient emails in input order so the wrapper can correlate
+        // by index when the real Resend response omits the `to` field.
+        let recipients_in_order: Vec<String> = chunk.iter().map(|c| c.email.clone()).collect();
+        match cli.batch_send(&batch_path, &recipients_in_order) {
             Ok(results) => {
                 for (email, resend_id) in results {
                     if let Some(contact) =

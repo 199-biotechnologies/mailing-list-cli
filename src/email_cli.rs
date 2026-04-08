@@ -249,12 +249,15 @@ impl EmailCli {
         Ok(())
     }
 
-    /// Shell out to `email-cli batch send --file <path>`. Returns a Vec of
-    /// `(recipient_email, resend_email_id)` pairs from the response.
+    /// Shell out to `email-cli batch send --file <path>`. Real email-cli
+    /// returns `{"data": {"data": [{"id": "<resend-uuid>"}, ...]}}` — items
+    /// match input order, no `to` field. The caller must pass the recipients
+    /// in input order so we can correlate index → email.
     #[allow(dead_code)]
     pub fn batch_send(
         &self,
         batch_file: &std::path::Path,
+        recipients_in_order: &[String],
     ) -> Result<Vec<(String, String)>, AppError> {
         self.throttle();
         let output = Command::new(&self.path)
@@ -290,39 +293,50 @@ impl EmailCli {
                 message: format!("invalid JSON from email-cli batch send: {e}"),
                 suggestion: "Check email-cli version (v0.6+ required)".into(),
             })?;
-        // Response shape: {"data": [{"id": "em_...", "to": "alice@..."}]}
+        // Real shape: {"data": {"data": [{"id": "..."}]}}
+        // Test stub shape: {"data": [{"id": "...", "to": "..."}]}  (legacy)
+        // We support both: try data.data first, fall back to data.
         let items = parsed
             .get("data")
+            .and_then(|d| d.get("data"))
             .and_then(|d| d.as_array())
+            .or_else(|| parsed.get("data").and_then(|d| d.as_array()))
             .ok_or_else(|| AppError::Transient {
                 code: "batch_send_no_data".into(),
                 message: "email-cli batch send response has no `data` array".into(),
-                suggestion: "Check email-cli version compatibility".into(),
+                suggestion:
+                    "Check email-cli version compatibility (expected data.data[] or data[])".into(),
             })?;
         let mut out = Vec::with_capacity(items.len());
-        for item in items {
+        for (i, item) in items.iter().enumerate() {
             let id = item
                 .get("id")
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
+            // Real responses have no `to` field — use the input order. The stub
+            // does include `to`, so prefer that when present (test compat).
             let to = item
                 .get("to")
                 .and_then(|v| v.as_str())
+                .map(String::from)
                 .or_else(|| {
                     item.get("to")
                         .and_then(|v| v.as_array())
                         .and_then(|a| a.first())
                         .and_then(|v| v.as_str())
+                        .map(String::from)
                 })
-                .unwrap_or("")
-                .to_string();
+                .unwrap_or_else(|| recipients_in_order.get(i).cloned().unwrap_or_default());
             out.push((to, id));
         }
         Ok(out)
     }
 
     /// Shell out to `email-cli send` for single-recipient transactional sends.
+    /// `from` is used as the `--account` argument (which is an email address
+    /// matching one of the configured sender accounts in email-cli, NOT the
+    /// profile name).
     #[allow(dead_code)]
     pub fn send(
         &self,
@@ -338,11 +352,9 @@ impl EmailCli {
                 "--json",
                 "send",
                 "--account",
-                &self.profile,
+                from,
                 "--to",
                 to,
-                "--from",
-                from,
                 "--subject",
                 subject,
                 "--html",
@@ -358,33 +370,53 @@ impl EmailCli {
                 message: format!("could not run email-cli send: {e}"),
                 suggestion: "Check that email-cli is on PATH".into(),
             })?;
+        // Real email-cli returns errors as JSON in stdout AND non-zero exit.
+        // Try to parse the stdout JSON either way so we can surface the actual
+        // error message.
+        let parsed_result: Result<Value, _> = serde_json::from_slice(&output.stdout);
         if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
+            let detail = parsed_result
+                .as_ref()
+                .ok()
+                .and_then(|p| p.get("error"))
+                .and_then(|e| e.get("message"))
+                .and_then(|v| v.as_str())
+                .map(String::from)
+                .unwrap_or_else(|| {
+                    String::from_utf8_lossy(&output.stderr)
+                        .lines()
+                        .next()
+                        .unwrap_or("(no error detail)")
+                        .to_string()
+                });
             return Err(AppError::Transient {
                 code: "send_failed".into(),
-                message: format!(
-                    "email-cli send failed: {}",
-                    stderr.lines().next().unwrap_or("(no stderr)")
-                ),
-                suggestion: "Run `email-cli profile test` to verify Resend connectivity".into(),
+                message: format!("email-cli send failed: {detail}"),
+                suggestion: "Run `email-cli profile test` to verify Resend connectivity, or check that the sender email is configured as an account in email-cli".into(),
             });
         }
-        let parsed: Value =
-            serde_json::from_slice(&output.stdout).map_err(|e| AppError::Transient {
-                code: "send_parse".into(),
-                message: format!("invalid JSON from email-cli send: {e}"),
-                suggestion: "Check email-cli version compatibility".into(),
-            })?;
+        let parsed = parsed_result.map_err(|e| AppError::Transient {
+            code: "send_parse".into(),
+            message: format!("invalid JSON from email-cli send: {e}"),
+            suggestion: "Check email-cli version compatibility".into(),
+        })?;
+        // Prefer `remote_id` (Resend UUID) over `id` (local DB id).
+        // `id` may be either a string or a number depending on email-cli version.
         let id = parsed
             .get("data")
-            .and_then(|d| d.get("id"))
-            .and_then(|v| v.as_str())
+            .and_then(|d| {
+                d.get("remote_id")
+                    .and_then(|v| v.as_str())
+                    .map(String::from)
+                    .or_else(|| d.get("id").and_then(|v| v.as_str()).map(String::from))
+                    .or_else(|| d.get("id").and_then(|v| v.as_i64()).map(|n| n.to_string()))
+            })
             .ok_or_else(|| AppError::Transient {
                 code: "send_no_id".into(),
-                message: "email-cli send response missing data.id".into(),
+                message: "email-cli send response missing data.remote_id and data.id".into(),
                 suggestion: "Check email-cli version compatibility".into(),
             })?;
-        Ok(id.to_string())
+        Ok(id)
     }
 
     /// Run `email-cli --json profile test <profile>`.
