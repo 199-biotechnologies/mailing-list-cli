@@ -1,6 +1,9 @@
 pub mod agent_info;
 pub mod contact;
+pub mod field;
 pub mod health;
 pub mod list;
+pub mod segment;
 pub mod skill;
+pub mod tag;
 pub mod update;

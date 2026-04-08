@@ -28,6 +28,9 @@ fn main() -> ExitCode {
         Command::Skill { action } => commands::skill::run(format, action),
         Command::List { action } => commands::list::run(format, action),
         Command::Contact { action } => commands::contact::run(format, action),
+        Command::Tag { action } => commands::tag::run(format, action),
+        Command::Field { action } => commands::field::run(format, action),
+        Command::Segment { action } => commands::segment::run(format, action),
     };
 
     match result {

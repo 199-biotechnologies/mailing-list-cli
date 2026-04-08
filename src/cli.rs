@@ -42,6 +42,21 @@ pub enum Command {
         #[command(subcommand)]
         action: ContactAction,
     },
+    /// Manage tags (n:m with contacts)
+    Tag {
+        #[command(subcommand)]
+        action: TagAction,
+    },
+    /// Manage custom fields
+    Field {
+        #[command(subcommand)]
+        action: FieldAction,
+    },
+    /// Manage dynamic segments (saved filters)
+    Segment {
+        #[command(subcommand)]
+        action: SegmentAction,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -110,4 +125,36 @@ pub struct ContactListArgs {
     /// Maximum number of contacts to return
     #[arg(long, default_value = "100")]
     pub limit: usize,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum TagAction {
+    /// List all tags with member counts
+    #[command(visible_alias = "ls")]
+    List,
+    /// Delete a tag (removes from all contacts)
+    Rm(TagRmArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct TagRmArgs {
+    /// Tag name
+    pub name: String,
+    /// Explicit confirmation (required)
+    #[arg(long)]
+    pub confirm: bool,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum FieldAction {
+    /// Placeholder — full impl in Task 10
+    #[command(visible_alias = "ls")]
+    List,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum SegmentAction {
+    /// Placeholder — full impl in Task 19
+    #[command(visible_alias = "ls")]
+    List,
 }

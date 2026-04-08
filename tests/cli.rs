@@ -267,3 +267,26 @@ fn contact_add_invalid_email_fails_with_exit_3() {
         .args(["--json", "contact", "add", "not-an-email", "--list", "1"]);
     cmd.assert().failure().code(3);
 }
+
+#[test]
+fn tag_ls_on_empty_db_returns_count_zero() {
+    let (_tmp, config_path, db_path) = stub_env();
+    let mut cmd = Command::cargo_bin("mailing-list-cli").unwrap();
+    cmd.env("MLC_CONFIG_PATH", &config_path)
+        .env("MLC_DB_PATH", &db_path)
+        .args(["--json", "tag", "ls"]);
+    let out = cmd.assert().success();
+    let value: Value =
+        serde_json::from_str(&String::from_utf8(out.get_output().stdout.clone()).unwrap()).unwrap();
+    assert_eq!(value["data"]["count"], 0);
+}
+
+#[test]
+fn tag_rm_without_confirm_fails() {
+    let (_tmp, config_path, db_path) = stub_env();
+    let mut cmd = Command::cargo_bin("mailing-list-cli").unwrap();
+    cmd.env("MLC_CONFIG_PATH", &config_path)
+        .env("MLC_DB_PATH", &db_path)
+        .args(["--json", "tag", "rm", "vip"]);
+    cmd.assert().failure().code(3);
+}
