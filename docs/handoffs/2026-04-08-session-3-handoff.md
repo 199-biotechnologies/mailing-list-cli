@@ -1,201 +1,317 @@
 # Session Handoff — Session 3
 
-**Date:** 2026-04-08 (evening)
-**Session:** v0.1.3 Codex-reviewed gap fixes → v0.2.0 agent-native rearchitecture → v0.2.1 real-Resend validation + hard-fail state fix
-**Context usage at handoff:** roughly half-full
+**Date:** 2026-04-08 (late evening)
+**Session:** v0.1.3 Codex-reviewed fixes → v0.2.0 agent-native rearchitecture → v0.2.1 real-Resend validation + state leak fix → v0.2.2 race-free test fix + CI green
+**Context usage at handoff:** roughly 85%
+
+> **Note:** This file was rewritten in place at the end of the session to supersede the earlier handoff that was committed at `388bca8`. The earlier version stopped at v0.2.1 and did not cover the CI flake discovery, the paths race fix, or the v0.2.2 tag. Git history has the original if needed.
 
 ---
 
-## TL;DR for the next session
+## TL;DR
 
-Four releases shipped in this session on top of v0.1.2:
+Four tagged releases shipped this session on top of v0.1.2:
 
-- **v0.1.3** — Codex-reviewed template lint fixes (unified variable extractor, per-offender line numbers, realistic placeholder sizes). Commit `4465fdd`.
-- **v0.2.0** — the big one. Three-way review (Claude + Codex gpt-5.4 xhigh + Gemini 3.1-pro) drove an aggressive agent-native rearchitecture. Dropped MJML, Handlebars, css-inline, html2text, serde_yaml, YAML frontmatter schemas, 14 of 20 lint rules, PEST segment DSL, `webhook listen`, `webhook test`, `template edit`, `template guidelines`. Added hand-rolled `{{ var }}` substituter + `template preview` + JSON-AST segment filter. 23 → 14 crates, ~9500 → ~5500 LoC. Commits `cb5d36c` (Phase 1) + `6ea71d4` (Phase 2+3).
-- **v0.2.1** — **real-Resend smoke test against `paperfoot.com` PASSED end-to-end**, including `event poll` ingesting real delivery events and `report show` returning real metrics. Also fixed a state leak in `broadcast send` where the status was stuck in `sending` after a render error. Docs audit for README + AGENTS.md. Commit `9d8c6d1`.
+| Tag | Commit | What | CI |
+|---|---|---|---|
+| `v0.1.3` | `4465fdd` | Codex-reviewed template lint fixes (unified variable extractor, per-offender line numbers, realistic placeholder sizes) | ✓ |
+| `v0.2.0` | `6ea71d4` | **The big one.** Three-way review (Claude + Codex gpt-5.4 xhigh + Gemini 3.1-pro-preview) drove an aggressive agent-native rearchitecture. Dropped MJML, Handlebars, css-inline, html2text, serde_yaml, YAML frontmatter schemas, 14 of 20 lint rules, PEST segment DSL, `webhook listen`, `webhook test`, `template edit`, `template guidelines`. Added hand-rolled `{{ var }}` substituter, `template preview`, JSON-AST segment filters. 23 → 14 crates. ~9500 → ~5500 LoC. | ✓ |
+| `v0.2.1` | `9d8c6d1` | **Real-Resend smoke test against paperfoot.com PASSED end-to-end** (first time since v0.1.1). Bug found during smoke test: `broadcast send` left the status stuck in `sending` after a render error. Fixed. Docs audit for README + AGENTS.md. | ⚠ CI flaked on the pre-existing paths race |
+| `v0.2.2` | `5bad68a` | **Latest stable.** Race-free env-var tests via in-module Mutex. CI pinned to `--test-threads=1` as belt+suspenders. CI green on the tagged commit. | **✓** |
 
-**At v0.2.1:**
-- Test count: 97 unit + 62 integration = **159 tests passing**
-- Dependencies: **14 runtime crates** (was 23 at v0.1.3, -39%)
-- Rust LoC: **~5500** (was ~9500, -42%)
+**Current state at handoff:**
+- Test count: 97 unit + 62 integration = **159 tests passing** (parallel in 1.48s with the mutex fix)
+- Dependencies: **14 runtime crates** (-39% from v0.1.3)
+- Rust LoC: **~5500** (-42% from v0.1.3)
 - Template lint rules: **6** (was 20, -70%)
-- Breaking changes from v0.1.x: yes, but zero production users
-- All CI runs green through v0.2.0; v0.2.1 CI should be queued
+- `target/release/mailing-list-cli` built and validated against real Resend
+- Smoke test DB preserved at `/tmp/mlc-smoke-v0.2.0/state.db` (1 sent + 1 failed broadcast)
 
-## Active plans
+---
 
-- **v0.2 rearchitecture (just shipped):** [`docs/plans/2026-04-08-phase-7-v0.2-rearchitecture.md`](../plans/2026-04-08-phase-7-v0.2-rearchitecture.md)
-- **Parity plan (reference):** [`docs/plans/2026-04-08-parity-plan.md`](../plans/2026-04-08-parity-plan.md)
-- **Design spec (PARTIALLY STALE):** [`docs/specs/2026-04-07-mailing-list-cli-design.md`](../specs/2026-04-07-mailing-list-cli-design.md) — §7 still documents v0.1 MJML + frontmatter model. See "Outstanding" below.
-- **Prior handoffs:** [`session-1`](./2026-04-08-session-handoff.md), [`session-2`](./2026-04-08-session-2-handoff.md)
+## Active Plan
 
-## Three-way review artifacts
+**Plan file:** [`docs/plans/2026-04-08-phase-7-v0.2-rearchitecture.md`](../plans/2026-04-08-phase-7-v0.2-rearchitecture.md)
+**Plan status:** **FULLY EXECUTED.** All three phases shipped in v0.2.0, validated in v0.2.1, race-fixed in v0.2.2. The plan document itself is frozen for historical reference.
 
-Preserved at `~/.claude/subagent-results/`:
-- `rearch-brief-1775664888.md` — the brief all three reviewers answered
+**Next plan:** None written yet. Outstanding items below are loose tasks, not a structured plan. If v0.3 ends up being large (template versioning + real migration 0003 + DMARC checks + daemon), it deserves its own plan file.
+
+---
+
+## Three-way review artifacts (preserved for reference)
+
+All at `~/.claude/subagent-results/`:
+- `rearch-brief-1775664888.md` — the structured brief all three reviewers answered
 - `codex-output-1775664888-rearch.md` — Codex gpt-5.4 xhigh review
-- `gemini-output-1775664888-rearch.md` — Gemini 3.1-pro review
+- `gemini-output-1775664888-rearch.md` — Gemini 3.1-pro-preview review
 - `claude-analysis-1775664888-rearch.md` — my own independent analysis
 - Earlier v0.1.3 Codex review: `codex-output-1775657343-template-gaps.md`
 
-## Current state
+These files are critical context — if this handoff is ambiguous, read the raw reviews.
 
-- **Branch:** `main`
-- **Last commit:** `9d8c6d1 chore(v0.2.1): validated against real Resend paperfoot.com...`
-- **Latest tag:** `v0.2.1`
-- **Tests:** 97 unit + 62 integration = 159 passing, `cargo test -- --test-threads=1` clean
-- **Build:** `cargo build`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check` all clean
-- **Release binary:** built at `target/release/mailing-list-cli` (3.5 MB stripped/LTO)
-- **Smoke test DB:** `/tmp/mlc-smoke-v0.2.0/state.db` preserved — 2 broadcasts (1 sent successfully, 1 failed on hard-fail path)
-- **Working tree:** clean
-- **Pushed:** main + all tags
+---
 
 ## What was accomplished this session
 
 ### v0.1.3 — Codex-reviewed template lint fixes (session start)
-Six gaps identified in session 2's "honest gaps" section; Codex ranked and advised. Shipped 3 code fixes + 2 docs fixes, deferred 1 to a later version:
+Six gaps identified at the end of session 2; Codex ranked and advised. Shipped 3 code fixes + 2 docs fixes, deferred 1:
 
-1. **Gap #3** (unused-var textual check) — unified `extract_merge_tag_names` to cover `{{#if}}`/`{{#unless}}` arguments and normalize whitespace
-2. **Gap #5** (alt/href lint breaks after first offender) — added `line: Option<usize>` to `LintFinding`, dropped the `break`s, emit per-offender with line numbers
-3. **Gap #6** (size lint underestimates real send) — replaced placeholder stubs with realistic HTML matching send-time shape
-4. **Gap #1** (mrml silent attribute drops) — docs-only warning in `template-authoring.md` (subsequently deleted in v0.2)
-5. **Gap #4** (no composition) — softened "v0.2+" promise in lint hints
-6. **Gap #2** (template versioning) — deferred
+- **Gap #3** unused-var textual check — unified `extract_merge_tag_names` to cover `{{#if}}`/`{{#unless}}` arguments and normalize whitespace
+- **Gap #5** alt/href break after first offender — added `line: Option<usize>` to `LintFinding`, dropped the breaks, emit per-offender
+- **Gap #6** size lint underestimates real send — replaced placeholder stubs with realistic HTML matching send-time shape
+- **Gap #1** mrml silent drops — docs-only (subsequently deleted in v0.2)
+- **Gap #4** no composition — softened "v0.2+" promise in lint hints
+- **Gap #2** template versioning — deferred (still outstanding, see below)
 
 ### v0.2.0 — agent-native rearchitecture
-After shipping v0.1.3, the user pushed back on the MJML stack itself with the "agent has preview + iteration loop" argument. That led to a three-way review (Claude + Codex + Gemini) which converged on aggressive simplification. User chose Option A (maximum aggression, 14 crates).
+The user pushed back on the MJML stack itself with the "agent has preview + iteration loop" argument. I ran a three-way review (Claude + Codex + Gemini, parallel, same brief) which converged on aggressive simplification. User picked **Option A** (max aggression, 14 crates).
 
-**Phase 1 deletions (commit `cb5d36c`):**
-- `src/segment/parser.rs` + `grammar.pest` (~640 lines — PEST was just an authoring façade; segments were already stored as JSON AST internally)
-- `src/webhook/listener.rs` + `signature.rs` (~240 lines — untested, violated AGENTS.md doctrine that email-cli owns the listener)
-- `template edit` command (interactive `$EDITOR`, violated AGENTS.md "no interactive prompts")
-- `template guidelines` command + asset (153-line embedded doctrine replaced by the scaffold)
-- `webhook test` command
-- Dependencies: `pest`, `pest_derive`, `tiny_http`, `tempfile` (moved to dev-deps)
+**Phase 1 (commit `cb5d36c`):**
+- Deleted `src/segment/parser.rs` + `grammar.pest` (~640 lines). PEST was an authoring façade; segments were already stored as JSON AST internally. Agents now pass `--filter-json <json>` / `--filter-json-file <path>`.
+- Deleted `src/webhook/listener.rs` + `signature.rs` (~240 lines). `webhook listen` was untested and violated AGENTS.md doctrine that email-cli owns the listener.
+- Deleted `template edit` (violated "no interactive prompts, ever"), `template guidelines` (153-line doctrine replaced by the scaffold), `webhook test`.
+- Deps: `pest`, `pest_derive`, `tiny_http` removed; `tempfile` moved to dev-deps.
 
-**Phase 2+3 template rewrite (commit `6ea71d4`):**
+**Phase 2+3 (commit `6ea71d4`):**
 - Deleted `src/template/{compile,lint,frontmatter}.rs` and `assets/template-authoring.md` (~1350 lines)
 - Added `src/template/subst.rs` (~400 lines) — hand-rolled `{{ var }}` + `{{{ allowlist }}}` + `{{#if}}`/`{{#unless}}` substituter with depth-aware nesting, HTML escaping, triple-brace XSS allowlist, unresolved-placeholder tracking
-- Added `src/template/render.rs` (~500 lines) — 6 inline lint rules, HTML-to-text stripping, strict vs preview render modes
+- Added `src/template/render.rs` (~500 lines) — 6 inline lint rules, HTML-to-text stripping, strict (send) vs preview render modes
 - Rewrote `src/commands/template.rs` — dropped `edit`/`guidelines`, added real `preview` command with `--out-dir`/`--open`
-- Updated `src/broadcast/pipeline.rs` — uses new `template::render()` in strict mode, hard-fails on any unresolved placeholder at send time (this is the v0.2 replacement for the v0.1 frontmatter variable schema)
+- Updated `src/broadcast/pipeline.rs` — uses new `template::render()` in strict mode, hard-fails on any unresolved placeholder at send time (the v0.2 replacement for the v0.1 frontmatter variable schema)
 - Migration 0003 — sentinel no-op (v0.1 databases are not supported; migration 0001 now creates the v0.2 shape directly)
 - DB schema: `template.mjml_source` → `template.html_source`, dropped `template.schema_json`
-- Dependencies dropped: `mrml`, `handlebars`, `css-inline`, `html2text`, `serde_yaml`
-- Version bump to 0.2.0, README badge updated, agent-info updated
+- Deps removed: `mrml`, `handlebars`, `css-inline`, `html2text`, `serde_yaml`
+- Version 0.2.0, README badge, agent-info updated
 
 ### v0.2.1 — real-Resend validation + state fix (commit `9d8c6d1`)
-**End-to-end smoke test against `paperfoot.com`:** This was overdue — v0.1.2, v0.1.3, and the initial v0.2.0 all skipped real-Resend validation. The v0.1.1 smoke test caught three real bugs that the stub can't see. v0.2.1 is the first v0.2 release actually validated.
+First real-Resend smoke test since v0.1.1. v0.1.2, v0.1.3, and the initial v0.2.0 ship all skipped this (the handoff warned three sessions ago).
 
-Steps executed:
-1. health (all 4 checks green)
-2. list create (real Resend segment `ccb0d9d9-ddb4-4c9e-aa22-c3167f9a00dc`)
-3. contact add (real Resend contact)
-4. template create + lint (clean)
-5. template preview with custom data (writes 3 files)
-6. broadcast create + broadcast preview (**real single send to** `smoke-test-v0.2.0@paperfoot.com`)
-7. broadcast send (**real batch send**, 1 recipient)
-8. wait 15s → event poll (processed 100 real Resend events)
-9. broadcast show → delivered_count=1 (attributed to our broadcast)
-10. report show 1 → full metrics populated (delivered=1, ctr=0.0, bounce_rate=0.0, etc.)
-11. **Hard-fail path**: created a template with `{{ typo_code_never_provided }}`, attempted send, verified exit 3 with `template_unresolved_placeholder`, **zero email-cli calls**, no batch file written
+Flow executed against live `paperfoot.com` (us-east-1) via `email-cli` profile `local`:
+1. health — all 4 checks green
+2. list create — real Resend segment `ccb0d9d9-ddb4-4c9e-aa22-c3167f9a00dc`
+3. contact add — real Resend contact
+4. template create + lint + preview — 0 errors, 0 warnings
+5. broadcast create
+6. **broadcast preview** (real single send to `smoke-test-v0.2.0@paperfoot.com`) — sent=1
+7. **broadcast send** (real batch) — sent=1, failed=0
+8. event poll — processed 100 real Resend events
+9. broadcast show — delivered_count=1 (attributed via resend_email_id)
+10. report show — full metrics populated
+11. **Hard-fail path** — typo template → `broadcast send` → exit 3, `template_unresolved_placeholder`, zero email-cli calls, no batch file
 
-**Bug found by step 11:** the broadcast was stuck in `sending` status after the render error instead of being reverted to `failed`. Fixed in `src/broadcast/pipeline.rs` — the render call now explicitly matches on the error, calls `broadcast_set_status(id, "failed", None)`, then returns the BadInput. The integration test `broadcast_send_hard_fails_on_unresolved_placeholder` now asserts the broadcast lands in `failed` state.
+**Bug caught by step 11:** broadcast stuck in `sending` status after render error instead of being reverted to `failed`. Fixed in `src/broadcast/pipeline.rs` — the render call now explicitly matches on the error, calls `broadcast_set_status(id, "failed", None)`, then returns. Integration test `broadcast_send_hard_fails_on_unresolved_placeholder` now asserts the failed state.
 
-**Docs audit:**
-- README.md command tables updated for Segments + Templates + Webhook ingestion to match v0.2 shape (removed stale `template guidelines`/`template edit`/`webhook listen --port`/`filter <expr>` references)
-- AGENTS.md removed "spec not yet written / implementation not started" stale text, added v0.2 conventions for `template preview` and the "no interactive prompts, ever" invariant
+**Docs audit:** README command tables updated for v0.2; AGENTS.md stale "not yet written" text replaced.
 
-## What is still outstanding
+### v0.2.2 — race fix + green CI (commits `8f06937` + `5bad68a`)
+**v0.2.1 CI failed** on the pre-existing `paths::tests` race — cargo's default thread pool races on process-global env vars. The handoff has warned about this since session 1 ("always use `--test-threads=1`") but CI was running without the flag and we got lucky on v0.1.x → v0.2.0. v0.2.1 lost the race.
 
-### Must do in the next session
+**Fix in `src/paths.rs`:** added a file-scope `static ENV_MUTEX: Mutex<()>` that each env-mutating test locks. Restructured each test to read the value and remove the env var BEFORE the assertion, so a failing assertion can't leak state into sibling tests. Poisoned-mutex recovery via `unwrap_or_else(|e| e.into_inner())`.
 
-1. **docs/specs/2026-04-07-mailing-list-cli-design.md §7** — still documents the v0.1 MJML + frontmatter + 20-rule lint architecture. Agents reading the spec will see the old design, not v0.2. Options:
-   - Annotate §7 as "superseded by v0.2; see docs/plans/2026-04-08-phase-7-v0.2-rearchitecture.md"
-   - Rewrite §7 against the new shape
-   - Delete the old spec entirely and make the plan the canonical reference
+**Belt+suspenders in `.github/workflows/ci.yml`:** added `-- --test-threads=1` to the test step. The mutex alone is sufficient for current tests, but single-threaded testing protects against future env-var tests landing before someone wraps them in the same mutex. Negligible cost (~1.5s on a 159-test suite).
 
-2. **Blind template authoring test against v0.2** — the v0.1 blind test gave agents the embedded `template guidelines` (now deleted) and asked each to author a template. The v0.2 model is fundamentally different. Re-run the test by:
-   - Building the scaffold via `template create welcome` (no file) and `template show welcome` to extract the HTML
-   - Giving Codex, Gemini, and Claude each a fresh prompt: "Author a welcome email template for mailing-list-cli v0.2.1. You have `template preview` and `template lint`. Iterate until the lint is clean and the preview looks right. Here's the scaffold to build from: [scaffold HTML]"
-   - Measure whether all three can successfully author a clean template using only preview+lint feedback
-   - Document the results in `docs/blind-test-results-v0.2.md`
+v0.2.2 tag push → CI **green** (`24160755176`).
 
-3. **Real CI verification for v0.2.1** — the push was recent and CI may still be running. Verify green before closing out. `gh run list --repo 199-biotechnologies/mailing-list-cli --limit 1`
-
-### Should do
-
-4. **Preview dry-run in preflight checks** — currently `preflight_checks` calls `template::lint()` which intentionally strips unresolved-placeholder findings (lint is for structural issues only). That's why the typo template gets past preflight and the hard-fail happens in the chunk loop. An alternative would be to do a dry-run render with the FIRST recipient's data during preflight, so the error is caught BEFORE we mark the broadcast `sending`. This would eliminate the need for the `broadcast_set_status(failed)` fix. Not strictly necessary since the current fix works, but it's a cleaner architecture.
-
-5. **Template versioning (Gap #2 from v0.1.3 Codex review)** — still outstanding. The proper fix is migration 0004 + `template_revision` table + `template history <name>` + `template restore <name> --revision N` commands. Currently `template create --from-file` is a destructive overwrite. Not urgent with zero production users but worth scheduling for v0.3.
-
-6. **Migration 0003 real schema upgrade** — currently a sentinel no-op. If anyone ever upgrades a v0.1.x database in place, they'll hit SQL errors because the template table still has `mjml_source` + `schema_json` columns. A real migration would do:
-   ```sql
-   ALTER TABLE template RENAME COLUMN mjml_source TO html_source;
-   ALTER TABLE template DROP COLUMN schema_json;
-   ```
-   SQLite 3.35+ supports both; rusqlite 0.37 bundles 3.47+. Not needed now (zero production users), but document it in the README as "clean-slate upgrade only" or implement it properly for v0.3.
-
-### Nice to have
-
-7. **DMARC/SPF/DKIM checks in `report deliverability`** — still stubbed, returns `verified_domains: []`. Would need a `dnscheck` module with actual DNS resolution. Phase 7 or later.
-
-8. **Long-running poll daemon** — currently `event poll` is a one-shot. A `daemon` subcommand that runs the poll loop on a schedule is a reasonable v0.3 add.
-
-9. **`template preview --serve <port>`** — I explicitly dropped this during the three-way review. If it turns out agents want live-reload, it's a few dozen lines of `tiny_http` glue. But the three reviewers all agreed "no live-reload server, use fswatch if you want that" so it's a real no, not a todo.
+---
 
 ## Key decisions made this session (not in code or plan)
 
-1. **Three-way review is the right pattern for architectural decisions.** Codex + Gemini + Claude (me) all answering the same structured brief in parallel, then synthesizing. All three converged on the same thesis here, which was strong signal. When they disagreed (e.g., JSON AST vs raw SQL for segments), the disagreement was load-bearing and I resolved based on which option has the cheapest implementation (JSON AST, because segments were already stored that way internally — Codex caught this).
+1. **Three-way review is the right pattern for architectural decisions.** Codex + Gemini + Claude in parallel on the same brief, then synthesize. All three converged on the agent-native thesis; where they disagreed (JSON AST vs raw SQL for segments), the disagreement was load-bearing and I resolved by the cheapest implementation (JSON AST — Codex caught that segments were already stored that way internally, making removal trivial).
 
-2. **The "agent-native CLI" thesis is real and actionable.** Assumptions that made sense for a blind-human author (declare your schema upfront, lint every possible mistake, embed a 153-line doctrine) become dead weight once you commit to agent-with-preview. The v0.2 rewrite is the concrete expression of this thesis. Test: the v0.2 end-to-end works, and the code is 42% smaller.
+2. **"Agent-native CLI" is the framing that unlocks the simplification.** Assumptions that made sense for a blind-human author (declare schema upfront, lint every possible mistake, embed a 153-line doctrine) become dead weight once you commit to agent-with-preview. Test: v0.2 end-to-end works and the code is 42% smaller.
 
-3. **Migration 0003 as a sentinel no-op is a defensible shortcut.** Zero production users means clean-slate upgrade is fine. If a production user ever emerges, write a real migration then. Documented in the risk register.
+3. **Migration 0003 as a sentinel no-op is a defensible shortcut.** Zero production users means clean-slate upgrade is fine. If a production user ever emerges, write a real migration then. Documented in the risk register. Anyone upgrading a v0.1.x database in place will hit SQL errors.
 
-4. **Smoke testing against real Resend is not optional.** Three releases in a row skipped it, the v0.2.1 run caught a bug. This is now a hard rule: every tagged release goes through the paperfoot.com smoke test before being declared done.
+4. **Real-Resend smoke testing is not optional.** Three releases in a row (v0.1.2, v0.1.3, initial v0.2.0) skipped it. The v0.2.1 run caught a bug that the stub couldn't see. This is now a hard rule: every tagged release goes through the paperfoot.com smoke test before being declared done.
 
-5. **CLAUDE.md rule: single-agent sessions don't use TaskCreate** — this held throughout. Tracking progress mentally worked fine for a ~30-file refactor.
+5. **Scaffold IS the documentation.** The v0.2 scaffold at `src/commands/template.rs::SCAFFOLD` is the only template docs an agent sees. It has to be self-explanatory because there's no separate guide anymore. Smoke test passed on the first try, but the blind-test re-run (see "What to do next" below) will tell us for real.
 
-6. **Scaffold is the documentation.** The v0.2 scaffold in `src/commands/template.rs::SCAFFOLD` is the only template docs an agent sees. It has to be self-explanatory because there's no separate guide anymore. So far it works, but the blind test re-run (item 2 above) will tell us for real.
+6. **CLAUDE.md rule: single-agent sessions don't use TaskCreate.** Held throughout. Tracking mentally worked fine for a multi-phase refactor.
 
-## Gotchas + warnings
+7. **The v0.2.1 CI flake is a code smell, not a fluke.** The race had been latent since session 1 but only started biting once commits landed in rapid succession. Fixing it properly (mutex + CI pin) is cheaper than another post-tag surprise.
 
-- **Don't use parallel `cargo test`** — there's a pre-existing race in `paths::tests`. Always `cargo test -- --test-threads=1`.
-- **Don't resurrect the frontmatter** — the whole v0.2 rewrite hinges on dropping it. If a new requirement seems to need declare-time variable validation, use the unresolved-at-send-time hard-fail instead.
-- **Don't add a live-reload preview server** — the three-way review was explicit "no `--serve`". If you want live-reload, fswatch the template file yourself.
-- **Don't put a Handlebars dep back** — the hand-rolled substituter in `src/template/subst.rs` supports exactly what v0.2 ships (scalar, triple-brace allowlist, `{{#if}}`, `{{#unless}}`, depth-aware nesting). Adding features via Handlebars would re-explode the dependency graph we just cut.
-- **Don't trust lint() to catch unresolved placeholders** — it explicitly strips `UnresolvedPlaceholder` findings because lint is for structural issues only. The unresolved check lives in `render()` strict mode, invoked from the broadcast pipeline.
-- **The `template preview` `--open` flag is not tested** — tests can't reliably launch browsers in CI. The flag is documented but no integration test covers it. Manual smoke testing only.
-- **Migration 0003 is a no-op sentinel** — see "Should do" item 6.
-- **The smoke test DB at `/tmp/mlc-smoke-v0.2.0/state.db`** can be reused. It has 1 sent broadcast, 1 failed broadcast, and the full report data. Export `MLC_DB_PATH=/tmp/mlc-smoke-v0.2.0/state.db` and the same config to resume.
-- **`docs/specs/2026-04-07-mailing-list-cli-design.md`** §7 is stale. Don't quote from it when explaining v0.2 — use the Phase 7 plan instead.
+8. **Tag v0.2.2 instead of moving v0.2.1.** v0.2.1's commit is functionally correct; only its CI run flaked. Moving a tag is usually worse than bumping. v0.2.2 is the latest "CI-green guaranteed" tag to point people at.
+
+---
+
+## Current state
+
+- **Branch:** `main`
+- **Last commit:** `5bad68a chore: bump to v0.2.2 — race fix + status string`
+- **Latest tag:** `v0.2.2`
+- **Uncommitted changes:** none (working tree clean)
+- **Tests passing:** yes. 97 unit + 62 integration = **159 passing** in 1.48s parallel, ~3.5s with `--test-threads=1`
+- **Build status:** clean (`cargo build`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check` all clean)
+- **CI status:** **green** on v0.2.2 commit (run `24160755176`, 2m13s)
+- **Release binary:** `target/release/mailing-list-cli` (3.5 MB LTO+strip)
+- **Pushed:** main + all tags pushed to `199-biotechnologies/mailing-list-cli`
+- **Smoke test DB:** `/tmp/mlc-smoke-v0.2.0/` preserved — config.toml, welcome.html, typo.html, state.db, cache/, preview/
+
+---
+
+## What to do next
+
+### 1. Fix the stale design spec (HIGH PRIORITY, bounded)
+**File:** `docs/specs/2026-04-07-mailing-list-cli-design.md`
+
+§7 still documents the v0.1 MJML + frontmatter + 20-rule lint architecture. Agents reading the spec see the old design, not v0.2.
+
+Choose one:
+- **(a) Annotate** — add a prominent banner at the top of §7 saying "SUPERSEDED in v0.2 by `docs/plans/2026-04-08-phase-7-v0.2-rearchitecture.md`" with a 1-paragraph summary of what changed
+- **(b) Rewrite** — replace §7 with the v0.2 shape (plain HTML, substituter, 6 lint rules, `template preview` as the iteration primitive)
+- **(c) Delete** — remove the spec entirely and make the Phase 7 plan the canonical reference
+
+Recommendation: **(a) first**, because it's fast and unambiguous; revisit (b) only if someone complains. The plan file is the canonical source of truth for v0.2 anyway.
+
+### 2. Re-run the blind template authoring test for v0.2
+**Goal:** verify the scaffold alone is enough for agents to cold-start the template system.
+
+Setup:
+```bash
+# Extract the scaffold as the only documentation an agent gets
+export MLC_CONFIG_PATH=/tmp/mlc-blind-v020/config.toml
+export MLC_DB_PATH=/tmp/mlc-blind-v020/state.db
+mkdir -p /tmp/mlc-blind-v020
+# Minimal config so `template create` works
+cat > $MLC_CONFIG_PATH <<'EOF'
+[sender]
+from = "test@example.com"
+physical_address = "123 Test St"
+[email_cli]
+path = "/Users/biobook/.cargo/bin/email-cli"
+profile = "local"
+[unsubscribe]
+public_url = "https://hooks.example.com/u"
+secret_env = "MLC_UNSUBSCRIBE_SECRET"
+EOF
+./target/release/mailing-list-cli template create welcome --subject "Welcome" | jq .
+./target/release/mailing-list-cli template show welcome | jq -r .data.html_source > /tmp/blind-scaffold.html
+```
+
+Then dispatch **Codex + Gemini + Claude (me)** in parallel with the same prompt:
+
+> "You are writing an email template for mailing-list-cli v0.2.2. You have exactly these tools:
+> - `template create <name> --subject <text> --from-file <path>` to save a template
+> - `template lint <name>` to validate compliance (6 rules: unsubscribe link, physical address footer, size, forbidden tags, unresolved placeholders, XSS allowlist)
+> - `template preview <name> --with-data <file> --out-dir <dir>` to render HTML to disk
+>
+> Here is the built-in scaffold as your only reference:
+> ```html
+> {scaffold HTML}
+> ```
+>
+> Write a welcome email for a fictional product, iterate via preview until the HTML looks good and the lint is clean. Deliver the final template file path and a summary of how many iterations it took."
+
+Measure:
+- Did all three produce a clean-lint template on the first try?
+- If not, how many preview iterations did each need?
+- Did any hit a footgun that the scaffold doesn't document?
+
+Save the outputs to `~/.claude/subagent-results/blind-test-v020-{agent}-{ts}.md` and write a summary at `docs/blind-test-results-v0.2.md`.
+
+### 3. Decide on v0.3 scope
+The handoff section below lists six deferred items. Look at them together and decide:
+- Ship a v0.3 with **just** template versioning (Gap #2 from v0.1.3 Codex review)? Small and focused.
+- Or bundle template versioning + real migration 0003 + `dnscheck` for DMARC/SPF/DKIM? Medium.
+- Or go bigger with a `daemon` subcommand for long-running poll? Large.
+
+Write the v0.3 plan at `docs/plans/2026-04-08-phase-8-v0.3-versioning.md` (or similar) before touching code.
+
+---
+
+## Files to review first
+
+1. **`docs/plans/2026-04-08-phase-7-v0.2-rearchitecture.md`** — the plan that was just executed. Read this to understand the v0.2 thesis.
+2. **`src/template/subst.rs`** — the hand-rolled substituter (~400 lines). Understand the two render modes and the triple-brace allowlist before touching templates.
+3. **`src/template/render.rs`** — the 6 lint rules + strict vs preview modes. This is where send-time hard-fail lives.
+4. **`src/broadcast/pipeline.rs`** — where the strict-mode render is called, and where the "mark failed on render error" fix lives (lines ~165-200).
+5. **`src/commands/template.rs`** — the CLI handlers including the `preview` command and the built-in `SCAFFOLD` constant.
+6. **`~/.claude/subagent-results/codex-output-1775664888-rearch.md`** — Codex's review that drove the v0.2 plan. Has the best one-line justifications for each deletion.
+
+---
+
+## Gotchas & warnings
+
+### Tests
+- **`cargo test` parallel now works** — the `paths::tests` race is fixed via in-module Mutex. Both `cargo test` and `cargo test -- --test-threads=1` are green.
+- **CI uses `--test-threads=1`** by default (belt+suspenders). Don't remove it without understanding why.
+- **Future env-var tests must lock the mutex** or the race will come back. Add a `static ENV_MUTEX: Mutex<()>` per file and lock it.
+
+### Templates
+- **Don't resurrect the frontmatter.** The whole v0.2 rewrite hinges on dropping it. If a new requirement seems to need declare-time variable validation, use the unresolved-at-send-time hard-fail instead.
+- **Don't add a Handlebars dep back.** The hand-rolled substituter in `src/template/subst.rs` supports exactly what v0.2 ships (scalar, triple-brace allowlist, `{{#if}}`, `{{#unless}}`, depth-aware nesting). Adding features via Handlebars would re-explode the dep graph we just cut.
+- **Don't trust `lint()` to catch unresolved placeholders.** It explicitly strips `UnresolvedPlaceholder` findings because lint is for structural issues only. The unresolved check lives in `render()` strict mode, called from the broadcast pipeline.
+- **Don't add `template preview --serve <port>`.** The three-way review was explicit no. If you want live-reload, fswatch the template file yourself.
+- **Migration 0003 is a sentinel no-op.** Anyone upgrading a v0.1.x database in place will hit SQL errors (`mjml_source` / `schema_json` columns still exist but code expects `html_source` only). Zero production users means this is acceptable, but document it if you ever make a release-notes page.
+- **The `template preview --open` flag is not tested.** Tests can't reliably launch browsers in CI. Manual smoke testing only.
+
+### Broadcast pipeline
+- **`preflight_checks` calls `lint()` which strips unresolved findings** — so a typo template will pass preflight. The hard-fail happens in the chunk loop via `render()` strict mode. If this feels wrong, see "Should do" item 4 in this handoff's original version (which was committed at `388bca8`).
+- **On render error in the chunk loop, the status is reverted to `failed`** before bubbling up. Don't break this — the integration test `broadcast_send_hard_fails_on_unresolved_placeholder` asserts it.
+
+### Agents
+- **AGENTS.md doctrine is now honored.** v0.1 was silently violating "no interactive prompts, ever" via `template edit` and "email-cli owns the webhook listener" via `webhook listen`. v0.2 dropped both. If you bring either back, fix AGENTS.md first.
+- **The scaffold is the documentation.** The 153-line `template-authoring.md` was deleted. Anything that needs to be in the docs now goes in the scaffold HTML as comments or in the built-in help text. Don't bring back an embedded guide.
+
+### Smoke test
+- **The paperfoot.com smoke test DB at `/tmp/mlc-smoke-v0.2.0/state.db`** is preserved with 1 sent broadcast (id=1) and 1 failed broadcast (id=2, the typo template). You can reuse it by exporting the same env vars:
+  ```bash
+  export MLC_CONFIG_PATH=/tmp/mlc-smoke-v0.2.0/config.toml
+  export MLC_DB_PATH=/tmp/mlc-smoke-v0.2.0/state.db
+  export MLC_CACHE_DIR=/tmp/mlc-smoke-v0.2.0/cache
+  export MLC_UNSUBSCRIBE_SECRET="smoke-v0.2.0-secret-at-least-16-bytes"
+  ```
+- **The smoke test IS mandatory before every release tag.** No more skipping it. Codex caught this in the v0.1.1 session, the handoff has been saying it since, and v0.2.1 proved it by catching a real bug.
+
+### Docs
+- **`docs/specs/2026-04-07-mailing-list-cli-design.md` §7 is stale.** Don't quote from it when explaining v0.2 — use the Phase 7 plan instead. See "What to do next" item 1.
+
+---
+
+## Still outstanding (deferred, not next-session-mandatory)
+
+### Should do soon
+- **Design spec §7 update** (item 1 above)
+- **Blind template authoring test v0.2** (item 2 above)
+
+### Defer to v0.3+
+- **Template versioning** (Gap #2 from v0.1.3 Codex review) — migration 0004 + `template_revision` table + `template history <name>` + `template restore <name> --revision N`. Currently `template create --from-file` is a destructive overwrite.
+- **Real migration 0003** — upgrade path for v0.1.x databases. Not needed with zero production users; document as "clean-slate upgrade only".
+- **DMARC/SPF/DKIM checks** in `report deliverability` — still stubbed with empty `verified_domains`. Would need a `dnscheck` module.
+- **Long-running poll daemon** — `event poll` is one-shot. A `daemon` subcommand running the poll loop on a schedule is a v0.3 candidate.
+- **`template preview --serve`** — explicitly rejected in v0.2 review. Don't bring it back without a new review.
+
+---
 
 ## Test count history
 
-| Version | Tests passing | Notes |
+| Version | Tests | Notes |
 |---|---|---|
 | v0.0.3 (session 1 start) | 30 | |
-| v0.0.4 Phase 3 ship | 101 | |
+| v0.0.4 Phase 3 | 101 | |
 | v0.0.5 hotfix | 110 | |
 | v0.1.0 Phase 4 | 135 | |
 | v0.1.1 Phase 5 | 148 | First real-Resend validation |
 | v0.1.2 Phase 6 | 167 | Webhooks + reports; **skipped real-Resend** |
 | v0.1.3 Codex gap fixes | 173 | **skipped real-Resend** |
-| v0.2.0 agent-native rearchitecture | 158 | Dropped old tests, added new ones; **skipped real-Resend** |
-| v0.2.1 real-Resend validation + state fix | **159** | **Real-Resend passed**; 1 new hard-fail integration test |
-
-## Session entry point for the next run
-
-> Read `docs/handoffs/2026-04-08-session-3-handoff.md`. The v0.2.1 release is out and validated against real Resend. **Three things to do this session:**
->
-> 1. **Fix the stale design spec**: `docs/specs/2026-04-07-mailing-list-cli-design.md` §7 still documents the v0.1 MJML + frontmatter + 20-rule lint architecture. Either annotate as superseded or rewrite against the v0.2 shape.
->
-> 2. **Re-run the blind template authoring test**: extract the v0.2 scaffold via `template create welcome` + `template show welcome`, dispatch Codex + Gemini + Claude with fresh prompts asking each to author a clean template using only `template preview` + `template lint` iteration. Document results in `docs/blind-test-results-v0.2.md`.
->
-> 3. **Verify CI green for v0.2.1** — `gh run list --repo 199-biotechnologies/mailing-list-cli --limit 1`.
->
-> Then decide whether to schedule template versioning (Gap #2) or the real Migration 0003 for v0.3, and tag the next release accordingly.
+| v0.2.0 rearchitecture | 158 | Dropped tests for deleted subsystems, added new ones; **skipped real-Resend** |
+| v0.2.1 real-Resend + state fix | 158 | +1 hard-fail integration test (cancelled a flaky one prior) |
+| v0.2.2 **(current)** | **159** | **Real-Resend passed**; race-free tests; CI green |
 
 ---
 
-*End of session 3 handoff.*
+## Session entry point for the next run
+
+> Read `docs/handoffs/2026-04-08-session-3-handoff.md`. v0.2.2 is the current stable release — real-Resend validated, CI green, 159 tests passing. Three things to do next session, in order:
+>
+> 1. **Fix `docs/specs/2026-04-07-mailing-list-cli-design.md` §7** — it still documents the v0.1 MJML architecture. Recommend: add a "SUPERSEDED in v0.2" banner pointing at `docs/plans/2026-04-08-phase-7-v0.2-rearchitecture.md`. 15-minute job.
+>
+> 2. **Re-run the blind template authoring test** — extract the v0.2 scaffold via `template create welcome` + `template show welcome`, dispatch Codex + Gemini + Claude with fresh prompts asking each to author a clean template using ONLY `template preview` + `template lint` iteration. Document results in `docs/blind-test-results-v0.2.md`. Validates that the scaffold is self-documenting.
+>
+> 3. **Decide on v0.3 scope.** Six items are deferred. Pick which ones ship in v0.3, write a plan file, brainstorm structure before touching code.
+>
+> Hard rule: **every tagged release goes through the paperfoot.com smoke test.** The v0.1.1 handoff said this, v0.1.2 / v0.1.3 / initial v0.2.0 skipped it, v0.2.1 caught a real bug because we finally ran it. No more skipping.
+
+---
+
+*End of session 3 handoff (revised at v0.2.2 tag).*
