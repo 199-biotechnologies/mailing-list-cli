@@ -904,7 +904,6 @@ impl Db {
 
     // ─── Template operations ───────────────────────────────────────────
 
-    #[allow(dead_code)] // wired into commands::template in Task 6
     pub fn template_upsert(
         &self,
         name: &str,
@@ -944,7 +943,6 @@ impl Db {
         }
     }
 
-    #[allow(dead_code)] // wired into commands::template in Task 6
     pub fn template_all(&self) -> Result<Vec<crate::models::Template>, AppError> {
         let mut stmt = self
             .conn
@@ -969,7 +967,6 @@ impl Db {
         rows.collect::<Result<Vec<_>, _>>().map_err(query_err)
     }
 
-    #[allow(dead_code)] // wired into commands::template in Task 6
     pub fn template_get_by_name(
         &self,
         name: &str,
@@ -997,7 +994,6 @@ impl Db {
         }
     }
 
-    #[allow(dead_code)] // wired into commands::template in Task 6
     pub fn template_delete(&self, name: &str) -> Result<bool, AppError> {
         let affected = self
             .conn

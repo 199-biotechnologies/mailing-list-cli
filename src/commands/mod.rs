@@ -6,4 +6,5 @@ pub mod list;
 pub mod segment;
 pub mod skill;
 pub mod tag;
+pub mod template;
 pub mod update;

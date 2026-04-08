@@ -57,6 +57,11 @@ pub enum Command {
         #[command(subcommand)]
         action: SegmentAction,
     },
+    /// Manage MJML templates (with the embedded agent authoring guide)
+    Template {
+        #[command(subcommand)]
+        action: TemplateAction,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -278,4 +283,70 @@ pub struct ContactImportArgs {
     /// Allow import without per-row consent (adds `imported_without_consent` tag)
     #[arg(long = "unsafe-no-consent")]
     pub unsafe_no_consent: bool,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum TemplateAction {
+    /// Create a new template (scaffold) or import an existing MJML file
+    Create(TemplateCreateArgs),
+    /// List all templates
+    #[command(visible_alias = "ls")]
+    List,
+    /// Print a template's MJML source
+    Show(TemplateShowArgs),
+    /// Render a template with merge data (returns JSON)
+    Render(TemplateRenderArgs),
+    /// Run the lint rule set against a template
+    Lint(TemplateLintArgs),
+    /// Open a template in $EDITOR (then re-lint and save)
+    Edit(TemplateEditArgs),
+    /// Delete a template
+    Rm(TemplateRmArgs),
+    /// Print the embedded agent authoring guide
+    Guidelines,
+}
+
+#[derive(Args, Debug)]
+pub struct TemplateCreateArgs {
+    /// Template name (snake_case)
+    pub name: String,
+    /// Import MJML + frontmatter from this file path instead of scaffolding
+    #[arg(long = "from-file")]
+    pub from_file: Option<std::path::PathBuf>,
+}
+
+#[derive(Args, Debug)]
+pub struct TemplateShowArgs {
+    pub name: String,
+}
+
+#[derive(Args, Debug)]
+pub struct TemplateRenderArgs {
+    pub name: String,
+    /// JSON file with merge data (an object: { "first_name": "Alice" })
+    #[arg(long = "with-data")]
+    pub with_data: Option<std::path::PathBuf>,
+    /// Substitute placeholder stubs for unsubscribe_link and physical_address_footer
+    #[arg(long = "with-placeholders")]
+    pub with_placeholders: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct TemplateLintArgs {
+    pub name: String,
+}
+
+#[derive(Args, Debug)]
+pub struct TemplateEditArgs {
+    pub name: String,
+    /// Save even if the lint still has errors after the edit
+    #[arg(long)]
+    pub force: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct TemplateRmArgs {
+    pub name: String,
+    #[arg(long)]
+    pub confirm: bool,
 }

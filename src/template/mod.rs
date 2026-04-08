@@ -22,8 +22,11 @@ pub mod frontmatter;
 pub mod lint;
 
 #[allow(unused_imports)]
-pub use compile::{CompileError, Rendered, compile, compile_with_placeholders};
+pub use compile::Rendered;
+pub use compile::{CompileError, compile, compile_with_placeholders};
+pub use frontmatter::{FrontmatterError, split_frontmatter};
 #[allow(unused_imports)]
-pub use frontmatter::{FrontmatterError, ParsedTemplate, VarSchema, Variable, split_frontmatter};
+pub use frontmatter::{ParsedTemplate, VarSchema, Variable};
+pub use lint::lint;
 #[allow(unused_imports)]
-pub use lint::{LintFinding, LintOutcome, LintRule, Severity, lint};
+pub use lint::{LintFinding, LintOutcome, LintRule, Severity};

@@ -46,7 +46,6 @@ pub struct Segment {
 }
 
 #[derive(Debug, Clone, Serialize)]
-#[allow(dead_code)] // fields consumed by template command in Task 6
 pub struct Template {
     pub id: i64,
     pub name: String,

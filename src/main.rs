@@ -10,7 +10,6 @@ mod models;
 mod output;
 mod paths;
 mod segment;
-#[allow(dead_code)] // full pipeline wired in Tasks 3-6
 mod template;
 
 use clap::Parser;
@@ -35,6 +34,7 @@ fn main() -> ExitCode {
         Command::Tag { action } => commands::tag::run(format, action),
         Command::Field { action } => commands::field::run(format, action),
         Command::Segment { action } => commands::segment::run(format, action),
+        Command::Template { action } => commands::template::run(format, action),
     };
 
     match result {
