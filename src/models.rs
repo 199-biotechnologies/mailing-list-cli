@@ -90,7 +90,6 @@ pub struct BroadcastRecipient {
 }
 
 #[derive(Debug, Clone, Serialize)]
-#[allow(dead_code)] // wired into commands::report in Phase 6 Tasks 7-8
 pub struct ReportSummary {
     pub broadcast_id: i64,
     pub broadcast_name: String,
@@ -109,7 +108,6 @@ pub struct ReportSummary {
 }
 
 #[derive(Debug, Clone, Serialize)]
-#[allow(dead_code)]
 pub struct LinkReport {
     pub link: String,
     pub clicks: i64,
@@ -117,7 +115,6 @@ pub struct LinkReport {
 }
 
 #[derive(Debug, Clone, Serialize)]
-#[allow(dead_code)]
 pub struct DeliverabilityReport {
     pub window_days: i64,
     pub total_sent: i64,
@@ -126,4 +123,5 @@ pub struct DeliverabilityReport {
     pub total_complained: i64,
     pub bounce_rate: f64,
     pub complaint_rate: f64,
+    pub verified_domains: Vec<String>,
 }

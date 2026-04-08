@@ -1440,6 +1440,130 @@ impl Db {
             .map_err(query_err)?;
         Ok(())
     }
+
+    // ─── Report aggregations ───────────────────────────────────────────
+
+    pub fn report_summary(
+        &self,
+        broadcast_id: i64,
+    ) -> Result<crate::models::ReportSummary, AppError> {
+        let broadcast = self
+            .broadcast_get(broadcast_id)?
+            .ok_or_else(|| AppError::BadInput {
+                code: "broadcast_not_found".into(),
+                message: format!("no broadcast with id {broadcast_id}"),
+                suggestion: "Run `mailing-list-cli broadcast ls`".into(),
+            })?;
+        let suppressed_count =
+            self.broadcast_recipient_count_by_status(broadcast_id, "suppressed")?;
+
+        let ctr = if broadcast.delivered_count > 0 {
+            (broadcast.clicked_count as f64 / broadcast.delivered_count as f64) * 100.0
+        } else {
+            0.0
+        };
+        let open_rate = if broadcast.delivered_count > 0 {
+            (broadcast.opened_count as f64 / broadcast.delivered_count as f64) * 100.0
+        } else {
+            0.0
+        };
+        let total_sent = (broadcast.recipient_count - suppressed_count).max(0);
+        let bounce_rate = if total_sent > 0 {
+            (broadcast.bounced_count as f64 / total_sent as f64) * 100.0
+        } else {
+            0.0
+        };
+        let complaint_rate = if total_sent > 0 {
+            (broadcast.complained_count as f64 / total_sent as f64) * 100.0
+        } else {
+            0.0
+        };
+
+        Ok(crate::models::ReportSummary {
+            broadcast_id,
+            broadcast_name: broadcast.name,
+            recipient_count: broadcast.recipient_count,
+            delivered_count: broadcast.delivered_count,
+            bounced_count: broadcast.bounced_count,
+            opened_count: broadcast.opened_count,
+            clicked_count: broadcast.clicked_count,
+            unsubscribed_count: broadcast.unsubscribed_count,
+            complained_count: broadcast.complained_count,
+            suppressed_count,
+            ctr,
+            bounce_rate,
+            complaint_rate,
+            open_rate,
+        })
+    }
+
+    pub fn report_links(
+        &self,
+        broadcast_id: i64,
+    ) -> Result<Vec<crate::models::LinkReport>, AppError> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT link, COUNT(*) as clicks, COUNT(DISTINCT contact_id) as unique_clickers
+                 FROM click WHERE broadcast_id = ?1
+                 GROUP BY link ORDER BY clicks DESC",
+            )
+            .map_err(query_err)?;
+        let rows = stmt
+            .query_map(params![broadcast_id], |row| {
+                Ok(crate::models::LinkReport {
+                    link: row.get(0)?,
+                    clicks: row.get(1)?,
+                    unique_clickers: row.get(2)?,
+                })
+            })
+            .map_err(query_err)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(query_err)
+    }
+
+    pub fn report_deliverability(
+        &self,
+        window_days: i64,
+    ) -> Result<crate::models::DeliverabilityReport, AppError> {
+        let since = chrono::Utc::now() - chrono::Duration::days(window_days);
+        let since_str = since.to_rfc3339();
+
+        let (total_sent, total_delivered, total_bounced, total_complained): (i64, i64, i64, i64) =
+            self.conn
+                .query_row(
+                    "SELECT
+                        COALESCE(SUM(recipient_count), 0),
+                        COALESCE(SUM(delivered_count), 0),
+                        COALESCE(SUM(bounced_count), 0),
+                        COALESCE(SUM(complained_count), 0)
+                     FROM broadcast WHERE created_at >= ?1",
+                    params![since_str],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                )
+                .map_err(query_err)?;
+
+        let bounce_rate = if total_sent > 0 {
+            (total_bounced as f64 / total_sent as f64) * 100.0
+        } else {
+            0.0
+        };
+        let complaint_rate = if total_sent > 0 {
+            (total_complained as f64 / total_sent as f64) * 100.0
+        } else {
+            0.0
+        };
+
+        Ok(crate::models::DeliverabilityReport {
+            window_days,
+            total_sent,
+            total_delivered,
+            total_bounced,
+            total_complained,
+            bounce_rate,
+            complaint_rate,
+            verified_domains: vec![], // Phase 6 doesn't wire domain list; Phase 7 dnscheck does
+        })
+    }
 }
 
 /// Stored consent record for a contact. Both fields may be `None` if
