@@ -76,7 +76,7 @@ pub fn run() {
         "auto_json_when_piped": true,
         "env_prefix": "MLC_",
         "depends_on": ["email-cli >= 0.6.0"],
-        "status": "v0.1.2 — webhook ingestion (poll + listen), reports (show/links/engagement/deliverability)"
+        "status": "v0.1.3 — template lint fixes (unified variable extractor, per-offender line numbers, realistic placeholder sizes)"
     });
     println!("{}", serde_json::to_string_pretty(&manifest).unwrap());
 }

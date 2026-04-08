@@ -2094,6 +2094,13 @@ fn agent_info_lists_phase_6_commands() {
     ] {
         assert!(commands.contains_key(key), "agent-info missing {key}");
     }
-    assert!(v["status"].as_str().unwrap().starts_with("v0.1.2"));
+    // Phase 6 commands landed in v0.1.2 and the status string must still start
+    // with a v0.1.x version (v0.1.2, v0.1.3, etc.) — we don't hard-code the
+    // patch version so this test stays stable across bumps.
+    let status = v["status"].as_str().unwrap();
+    assert!(
+        status.starts_with("v0.1."),
+        "status must advertise a v0.1.x release, got: {status}"
+    );
     assert_eq!(v["version"], env!("CARGO_PKG_VERSION"));
 }

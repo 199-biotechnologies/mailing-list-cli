@@ -30,8 +30,31 @@ pub struct Rendered {
     pub size_bytes: usize,
 }
 
-const PLACEHOLDER_UNSUBSCRIBE: &str = "https://example.invalid/u/PLACEHOLDER_UNSUBSCRIBE_TOKEN";
-const PLACEHOLDER_ADDRESS: &str = "Your Company Name · 123 Example Street · City, ST 00000";
+// Placeholder HTML stubs used by `compile_with_placeholders` AND by the lint
+// size measurement path. These MUST match the shape of the real send-time
+// injection in `src/broadcast/pipeline.rs` so that:
+//   (1) `template render --with-placeholders` shows agents a preview that
+//       looks like the real output (an actual <a> tag and a <div> footer,
+//       not a bare URL).
+//   (2) the post-inline size measured by `template lint` is at least as large
+//       as the real-send size. The lint errors at 102 KB (Gmail clip) and
+//       warns at 90 KB — if the placeholders were smaller than the real
+//       injection, a template sitting at 101.8 KB in the lint could be
+//       102.1 KB in the real send and get clipped. So these stubs are sized
+//       to match the upper envelope of typical operator configurations.
+//
+// Real send path for comparison (`src/broadcast/pipeline.rs` lines 143-150):
+//   let unsubscribe_html = format!("<a href=\"{}\" target=\"_blank\">Unsubscribe</a>", ...)
+//   let footer_html = format!(
+//       "<div style=\"color:#666;font-size:11px;text-align:center;margin-top:20px\">{}</div>",
+//       physical_address
+//   );
+//
+// The stubs use a long URL (matching a real public_url + HMAC-SHA256 base64url
+// token ~44 chars) and a long physical address. They're deliberately slightly
+// over-sized to build in a safety margin. Bytes: ~124 and ~175.
+const PLACEHOLDER_UNSUBSCRIBE: &str = "<a href=\"https://hooks.example.invalid/u/PLACEHOLDER_UNSUBSCRIBE_TOKEN_aaaaaaaaaaaaaaaaaaaaaaaaaa\" target=\"_blank\">Unsubscribe</a>";
+const PLACEHOLDER_ADDRESS: &str = "<div style=\"color:#666;font-size:11px;text-align:center;margin-top:20px\">Your Company Name · 123 Example Street · Suite 400 · City, ST 00000 · United States</div>";
 
 /// Compile a template with merge data. Send-time-only placeholders
 /// (`{{{ unsubscribe_link }}}`, `{{{ physical_address_footer }}}`) pass through

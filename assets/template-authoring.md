@@ -80,6 +80,18 @@ output, because these placeholders inject HTML.
 Every component supports `padding`, `background-color`, `color`, `font-size`,
 `font-family`, and other standard email-safe attributes.
 
+**Compatibility note:** `mailing-list-cli` compiles MJML with the Rust crate
+`mrml 5.1`, NOT the reference JavaScript MJML implementation. Most standard
+attributes work identically, but **uncommon or newer attributes may be silently
+dropped** by mrml without a warning. Examples include things like
+`border-radius` on `<mj-section>` (works in JS MJML, dropped in mrml 5.1).
+
+If an attribute doesn't appear in the rendered output, that's the most likely
+explanation. Always verify with `template render --with-placeholders` or send a
+test via `broadcast preview <id> --to your@email.com` before relying on it.
+When in doubt, stick to the attributes shown in the MJML docs for the core
+components above — those are well-supported by mrml.
+
 ## Merge tags
 
 Use Mustache syntax with snake_case variable names:
@@ -101,7 +113,10 @@ Conditionals:
 {{/if}}
 ```
 
-Loops are NOT supported in v0.1.
+Loops (`{{#each}}`) and partials (`{{> name}}`) are NOT supported. Templates
+are intentionally single-file — if you need a shared section, duplicate it
+across templates. If you need to generate many variants from one schema,
+generate the templates programmatically with `template create --from-file`.
 
 ## Variables built into every template
 
@@ -149,5 +164,8 @@ to send a real test through Resend.
 ## When in doubt
 
 Read [mjml.io/try-it-live](https://mjml.io/try-it-live) — the official MJML
-playground. Every component is documented there.
+playground. Every component is documented there, but remember the compatibility
+note above: `mailing-list-cli` uses `mrml 5.1` (Rust), not the JS MJML engine
+the playground runs. Stick to core components and standard attributes, and
+always verify the rendered output with `template render --with-placeholders`.
 ````

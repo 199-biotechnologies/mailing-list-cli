@@ -43,6 +43,10 @@ pub struct LintFinding {
     pub rule: LintRule,
     pub message: String,
     pub hint: String,
+    /// 1-indexed line in the template body where the finding applies.
+    /// `None` means the finding is template-scoped (e.g. "plain-text alternative is empty").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub line: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -96,6 +100,7 @@ pub fn lint(source: &str) -> LintOutcome {
                 },
                 message: format!("{e}"),
                 hint: "Every template must start with a `---` delimited YAML frontmatter block declaring name, subject, and variables".into(),
+                line: None,
             });
             return summarize(findings);
         }
@@ -109,6 +114,7 @@ pub fn lint(source: &str) -> LintOutcome {
             rule: LintRule::UnsubscribeLinkMissing,
             message: "template body does not contain {{{ unsubscribe_link }}}".into(),
             hint: "Insert `{{{ unsubscribe_link }}}` inside an <mj-text> near the footer — it's replaced at send time with a one-click unsubscribe URL".into(),
+            line: None,
         });
     }
     if !body.contains("{{{ physical_address_footer }}}") {
@@ -117,6 +123,7 @@ pub fn lint(source: &str) -> LintOutcome {
             rule: LintRule::PhysicalAddressFooterMissing,
             message: "template body does not contain {{{ physical_address_footer }}}".into(),
             hint: "Insert `{{{ physical_address_footer }}}` inside an <mj-text> near the unsubscribe link — required by CAN-SPAM".into(),
+            line: None,
         });
     }
 
@@ -127,6 +134,7 @@ pub fn lint(source: &str) -> LintOutcome {
             rule: LintRule::SubjectEmpty,
             message: "subject is empty".into(),
             hint: "Add a subject line to the frontmatter".into(),
+            line: None,
         });
     } else if schema.subject.len() > SUBJECT_MAX_LEN {
         findings.push(LintFinding {
@@ -137,6 +145,7 @@ pub fn lint(source: &str) -> LintOutcome {
                 schema.subject.len()
             ),
             hint: "Long subjects are truncated on mobile — aim for < 50 chars when possible".into(),
+            line: None,
         });
     }
 
@@ -147,6 +156,7 @@ pub fn lint(source: &str) -> LintOutcome {
             rule: LintRule::MjPreviewMissing,
             message: "template has no <mj-preview>".into(),
             hint: "Preview text in the inbox row dramatically affects open rates — add `<mj-preview>...</mj-preview>` to <mj-head>".into(),
+            line: None,
         });
     }
 
@@ -159,6 +169,7 @@ pub fn lint(source: &str) -> LintOutcome {
                 message: format!("body contains `{pat}` which breaks in Outlook desktop"),
                 hint: "Use <mj-section>/<mj-column>/<mj-spacer> for layout instead of modern CSS"
                     .into(),
+                line: None,
             });
         }
     }
@@ -171,6 +182,7 @@ pub fn lint(source: &str) -> LintOutcome {
                 rule: LintRule::ForbiddenTag,
                 message: format!("template contains forbidden tag `{tag}`"),
                 hint: "This tag is blocked by most email clients and/or by mailing-list-cli's security policy. Remove it.".into(),
+                line: None,
             });
         }
     }
@@ -183,10 +195,11 @@ pub fn lint(source: &str) -> LintOutcome {
             message: "template contains raw `<table>` outside of `<mj-raw>` or `<mj-table>`".into(),
             hint: "Use `<mj-section>/<mj-column>` for layout or `<mj-table>` for tabular data"
                 .into(),
+            line: None,
         });
     }
 
-    // 8. <mj-image> must have alt attribute
+    // 8. <mj-image> must have alt attribute — report every offender with its line.
     for idx in find_tag_positions(&body, "<mj-image") {
         let tag_end = body[idx..].find('>').map(|n| idx + n).unwrap_or(body.len());
         let tag_slice = &body[idx..tag_end];
@@ -196,12 +209,12 @@ pub fn lint(source: &str) -> LintOutcome {
                 rule: LintRule::ImageMissingAlt,
                 message: "`<mj-image>` missing `alt` attribute".into(),
                 hint: "Add `alt=\"descriptive text\"` to every image. Screen readers and spam filters care.".into(),
+                line: Some(line_for_offset(&body, idx)),
             });
-            break; // report once, not per image
         }
     }
 
-    // 9. <mj-button> must have non-empty, non-`#` href
+    // 9. <mj-button> must have non-empty, non-`#` href — report every offender.
     for idx in find_tag_positions(&body, "<mj-button") {
         let tag_end = body[idx..].find('>').map(|n| idx + n).unwrap_or(body.len());
         let tag_slice = &body[idx..tag_end];
@@ -214,8 +227,8 @@ pub fn lint(source: &str) -> LintOutcome {
                 hint:
                     "Every button must have a real target URL or a merge tag like `{{ cta_url }}`."
                         .into(),
+                line: Some(line_for_offset(&body, idx)),
             });
-            break;
         }
     }
 
@@ -229,6 +242,7 @@ pub fn lint(source: &str) -> LintOutcome {
                     "`{{{{{{ {captured} }}}}}}` uses triple-brace (raw HTML) but is not in the allowlist"
                 ),
                 hint: "Triple-brace is reserved for `unsubscribe_link` and `physical_address_footer`. Use double-brace `{{ name }}` for contact fields.".into(),
+                line: None,
             });
         }
     }
@@ -238,20 +252,29 @@ pub fn lint(source: &str) -> LintOutcome {
         findings.push(LintFinding {
             severity: Severity::Error,
             rule: LintRule::ForbiddenHelper,
-            message: "template uses `{{#each}}` or `{{> partial}}` which are not supported in v0.1".into(),
-            hint: "Phase 4 supports scalar variables + `{{#if}}` / `{{#unless}}` only. Loops and partials land in v0.2+.".into(),
+            message: "template uses `{{#each}}` or `{{> partial}}` which are not supported".into(),
+            hint: "mailing-list-cli templates are intentionally single-file: scalar variables and `{{#if}}`/`{{#unless}}` only. Loops and partials are out of scope — duplicate the content across templates instead, or generate templates programmatically.".into(),
+            line: None,
         });
     }
 
-    // 12. Declared-vs-used variable check
-    //    - Declared but not used in body or subject → ERROR (Codex FIX #6)
+    // 12. Declared-vs-used variable check — unified extractor.
+    //    - Declared but not used in body or subject → ERROR
     //    - Used but not declared (and not in built-ins) → ERROR
+    //
+    // We build a single set of "referenced variables" from both subject and
+    // body via `extract_merge_tag_names`, which covers `{{ name }}`,
+    // `{{{ name }}}`, AND the arguments of `{{#if name}}` / `{{#unless name}}`.
+    // A variable that is only used as a conditional guard (no further reference
+    // inside the block) is correctly treated as "used". Whitespace inside
+    // `{{ var }}` is normalized by the extractor, so `{{var}}` and
+    // `{{  var  }}` are both recognized.
+    let mut used_set: std::collections::HashSet<String> =
+        extract_merge_tag_names(&body).into_iter().collect();
+    used_set.extend(extract_merge_tag_names(&schema.subject));
+
     for var in &schema.variables {
-        let tag2 = format!("{{{{ {} }}}}", var.name);
-        let tag3 = format!("{{{{{{ {} }}}}}}", var.name);
-        let tag2_sub = schema.subject.contains(&tag2);
-        let tag_in_body = body.contains(&tag2) || body.contains(&tag3);
-        if !tag2_sub && !tag_in_body {
+        if !used_set.contains(&var.name) {
             findings.push(LintFinding {
                 severity: Severity::Error,
                 rule: LintRule::UnusedVariable,
@@ -260,15 +283,13 @@ pub fn lint(source: &str) -> LintOutcome {
                     "Either remove `{}` from the frontmatter or reference it in the body/subject",
                     var.name
                 ),
+                line: None,
             });
         }
     }
 
-    // Scan body + subject for `{{ identifier }}` tokens and verify each is declared or built-in.
-    let mut used = extract_merge_tag_names(&body);
-    used.extend(extract_merge_tag_names(&schema.subject));
-    for captured in used {
-        let declared = schema.variables.iter().any(|v| v.name == captured);
+    for captured in &used_set {
+        let declared = schema.variables.iter().any(|v| v.name == *captured);
         let built_in = BUILT_INS.contains(&captured.as_str());
         if !declared && !built_in {
             findings.push(LintFinding {
@@ -279,6 +300,7 @@ pub fn lint(source: &str) -> LintOutcome {
                     "Add `- name: {captured}\\n    type: string\\n    required: false` to `variables:` or use one of the built-ins: {}",
                     BUILT_INS.join(", ")
                 ),
+                line: None,
             });
         }
     }
@@ -298,6 +320,7 @@ pub fn lint(source: &str) -> LintOutcome {
                         html.len(), GMAIL_CLIP_ERROR
                     ),
                     hint: "Reduce the template size — inline smaller images, remove redundant sections, or move content to a landing page. A clipped footer is a compliance failure, not just an aesthetic problem.".into(),
+                    line: None,
                 });
             } else if html.len() >= GMAIL_CLIP_WARN {
                 findings.push(LintFinding {
@@ -308,6 +331,7 @@ pub fn lint(source: &str) -> LintOutcome {
                         html.len(), GMAIL_CLIP_ERROR
                     ),
                     hint: "Consider trimming the template before it grows past the clip limit.".into(),
+                    line: None,
                 });
             }
             if text.trim().is_empty() {
@@ -316,6 +340,7 @@ pub fn lint(source: &str) -> LintOutcome {
                     rule: LintRule::EmptyPlainText,
                     message: "plain-text alternative is empty".into(),
                     hint: "html2text failed to extract readable text — ensure the template has actual <mj-text> content".into(),
+                    line: None,
                 });
             }
         }
@@ -325,11 +350,20 @@ pub fn lint(source: &str) -> LintOutcome {
                 rule: LintRule::MjmlParseFailed,
                 message: format!("compile failed: {e}"),
                 hint: "Run `template render <name>` to see the full compile error".into(),
+                line: None,
             });
         }
     }
 
     summarize(findings)
+}
+
+/// Compute the 1-indexed line number containing `offset` bytes into `body`.
+/// Used to give agents a specific line for per-element findings.
+fn line_for_offset(body: &str, offset: usize) -> usize {
+    // Newlines before `offset` = (line number - 1). Clamp offset to body.len().
+    let clamped = offset.min(body.len());
+    body[..clamped].bytes().filter(|b| *b == b'\n').count() + 1
 }
 
 /// Find all byte positions where `needle` appears in `haystack` (non-overlapping).
@@ -396,10 +430,18 @@ fn stub_data_for_variables(schema: &crate::template::frontmatter::VarSchema) -> 
     Value::Object(map)
 }
 
-/// Extract `{{ name }}` and `{{{ name }}}` identifiers from the template body.
-/// Handlebars control keywords that appear inside `{{ }}` but are NOT merge tag
-/// variables. Without this list, `{{else}}` is falsely reported as an
-/// undeclared variable `else`.
+/// Extract referenced-variable identifiers from a Handlebars body.
+///
+/// Covers:
+///   - `{{ name }}` (any amount of whitespace around the name)
+///   - `{{{ name }}}` (triple-brace raw)
+///   - `{{#if name}}` / `{{#unless name}}` (the block argument is the referenced variable)
+///
+/// Skips `{{/if}}`, `{{else}}`, `{{> partial}}`, `{{!comment}}`, `{{#each ...}}`,
+/// and any Handlebars control keyword that might leak through as a bare identifier.
+///
+/// Note: this is intentionally a subset parser matching the v0.1 frozen language.
+/// If we ever widen the language (loops, partials, custom helpers), widen this too.
 const HANDLEBARS_KEYWORDS: &[&str] = &["else", "if", "unless", "each", "with", "this"];
 
 fn extract_merge_tag_names(body: &str) -> Vec<String> {
@@ -417,22 +459,50 @@ fn extract_merge_tag_names(body: &str) -> Vec<String> {
             // Find the closing `}}`
             if let Some(close_rel) = body[start..].find("}}") {
                 let inner = body[start..start + close_rel].trim();
-                // Skip helpers like `{{#if ...}}` / `{{/if}}` / `{{> partial}}`
-                if !inner.starts_with('#')
-                    && !inner.starts_with('/')
-                    && !inner.starts_with('>')
-                    && !inner.starts_with('!')
-                    && !inner.is_empty()
+                if inner.is_empty()
+                    || inner.starts_with('/')
+                    || inner.starts_with('>')
+                    || inner.starts_with('!')
                 {
-                    // An identifier, possibly with leading triple-brace trimmed already
-                    let name: String = inner
-                        .chars()
-                        .take_while(|c| c.is_alphanumeric() || *c == '_')
-                        .collect();
-                    // Skip Handlebars control keywords (else, if, unless, each, with, this)
-                    if !name.is_empty() && !HANDLEBARS_KEYWORDS.contains(&name.as_str()) {
-                        out.push(name);
+                    // closing tag, partial, or comment — not a variable reference
+                    i = start + close_rel + 2;
+                    continue;
+                }
+
+                if let Some(rest) = inner.strip_prefix('#') {
+                    // Block opener: `{{#if foo}}`, `{{#unless foo}}`, `{{#each foo}}`, etc.
+                    // Only `if` and `unless` are allowed in v0.1; the others are caught
+                    // separately by the ForbiddenHelper rule.
+                    let mut parts = rest.split_whitespace();
+                    let helper = parts.next().unwrap_or("");
+                    if helper == "if" || helper == "unless" {
+                        if let Some(arg) = parts.next() {
+                            let name: String = arg
+                                .chars()
+                                .take_while(|c| c.is_alphanumeric() || *c == '_')
+                                .collect();
+                            if !name.is_empty() && !HANDLEBARS_KEYWORDS.contains(&name.as_str()) {
+                                out.push(name);
+                            }
+                        }
                     }
+                    i = start + close_rel + 2;
+                    continue;
+                }
+
+                // Normal `{{ name }}` or `{{{ name }}}`. Strip any leading `^` that
+                // Mustache-style inverse blocks might use (Handlebars also tolerates these).
+                let first_token = inner
+                    .trim_start_matches('^')
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or("");
+                let name: String = first_token
+                    .chars()
+                    .take_while(|c| c.is_alphanumeric() || *c == '_')
+                    .collect();
+                if !name.is_empty() && !HANDLEBARS_KEYWORDS.contains(&name.as_str()) {
+                    out.push(name);
                 }
                 i = start + close_rel + 2;
                 continue;
@@ -623,5 +693,276 @@ variables:
             "handlebars keywords must not be flagged as undeclared variables, got: {undeclared:?}"
         );
         assert_eq!(outcome.error_count, 0, "findings: {:?}", outcome.findings);
+    }
+
+    // ─── Gap #3 regression tests: unified variable extractor ────────────────
+
+    #[test]
+    fn variable_used_only_as_if_guard_is_not_flagged_unused() {
+        // `optional_feature` is declared and referenced only as `{{#if optional_feature}}`.
+        // The old textual check required an exact `{{ optional_feature }}` match and
+        // falsely flagged this as unused. The unified extractor now covers `#if` args.
+        let src = r#"---
+name: gap3_if_guard
+subject: "Hi {{ first_name }}"
+variables:
+  - name: first_name
+    type: string
+    required: true
+  - name: optional_feature
+    type: bool
+    required: false
+---
+<mjml>
+  <mj-head>
+    <mj-title>Hi</mj-title>
+    <mj-preview>Hi</mj-preview>
+  </mj-head>
+  <mj-body>
+    <mj-section>
+      <mj-column>
+        <mj-text>Hi {{ first_name }}</mj-text>
+        {{#if optional_feature}}
+          <mj-text>Feature is on.</mj-text>
+        {{/if}}
+        {{{ unsubscribe_link }}}
+        {{{ physical_address_footer }}}
+      </mj-column>
+    </mj-section>
+  </mj-body>
+</mjml>
+"#;
+        let outcome = lint(src);
+        let unused: Vec<_> = outcome
+            .findings
+            .iter()
+            .filter(|f| f.rule == LintRule::UnusedVariable)
+            .collect();
+        assert!(
+            unused.is_empty(),
+            "variable used only as `{{{{#if}}}}` guard must not be flagged unused, got: {:?}",
+            unused.iter().map(|f| &f.message).collect::<Vec<_>>()
+        );
+        assert_eq!(outcome.error_count, 0, "findings: {:?}", outcome.findings);
+    }
+
+    #[test]
+    fn undeclared_variable_inside_if_guard_is_flagged() {
+        // Symmetric case: `{{#if not_declared}}` should flag `not_declared` as undeclared.
+        let src = r#"---
+name: gap3_undeclared_guard
+subject: "Hi {{ first_name }}"
+variables:
+  - name: first_name
+    type: string
+    required: true
+---
+<mjml>
+  <mj-head>
+    <mj-title>Hi</mj-title>
+    <mj-preview>Hi</mj-preview>
+  </mj-head>
+  <mj-body>
+    <mj-section>
+      <mj-column>
+        <mj-text>Hi {{ first_name }}</mj-text>
+        {{#if not_declared}}<mj-text>Nope</mj-text>{{/if}}
+        {{{ unsubscribe_link }}}
+        {{{ physical_address_footer }}}
+      </mj-column>
+    </mj-section>
+  </mj-body>
+</mjml>
+"#;
+        let outcome = lint(src);
+        assert!(
+            outcome
+                .findings
+                .iter()
+                .any(|f| f.rule == LintRule::UndeclaredVariable
+                    && f.message.contains("not_declared")),
+            "undeclared var inside `#if` should be flagged; findings: {:?}",
+            outcome.findings
+        );
+    }
+
+    #[test]
+    fn unused_variable_check_tolerates_whitespace() {
+        // The old check required `{{ var }}` with exactly one space on each side.
+        // `{{var}}` (no space) and `{{  var  }}` (two spaces) should both count
+        // as "used" now that the unified extractor normalizes whitespace.
+        let src = r#"---
+name: gap3_whitespace
+subject: "Subject"
+variables:
+  - name: no_space
+    type: string
+    required: true
+  - name: two_space
+    type: string
+    required: true
+---
+<mjml>
+  <mj-head>
+    <mj-title>Hi</mj-title>
+    <mj-preview>Hi</mj-preview>
+  </mj-head>
+  <mj-body>
+    <mj-section>
+      <mj-column>
+        <mj-text>{{no_space}} and {{  two_space  }}</mj-text>
+        {{{ unsubscribe_link }}}
+        {{{ physical_address_footer }}}
+      </mj-column>
+    </mj-section>
+  </mj-body>
+</mjml>
+"#;
+        let outcome = lint(src);
+        let unused: Vec<_> = outcome
+            .findings
+            .iter()
+            .filter(|f| f.rule == LintRule::UnusedVariable)
+            .collect();
+        assert!(
+            unused.is_empty(),
+            "whitespace-irregular refs must count as used, got: {:?}",
+            unused.iter().map(|f| &f.message).collect::<Vec<_>>()
+        );
+    }
+
+    // ─── Gap #5 regression tests: report every offender with line number ────
+
+    #[test]
+    fn reports_all_missing_alt_attributes_with_line_numbers() {
+        // Three <mj-image> tags, none with alt. Should emit THREE findings,
+        // each with a distinct 1-indexed line number. The old code had a
+        // `break` after the first finding.
+        let src = r#"---
+name: gap5_multi_image
+subject: "Subject"
+---
+<mjml>
+  <mj-head>
+    <mj-title>Hi</mj-title>
+    <mj-preview>Hi</mj-preview>
+  </mj-head>
+  <mj-body>
+    <mj-section>
+      <mj-column>
+        <mj-image src="https://example.com/a.png" />
+        <mj-image src="https://example.com/b.png" />
+        <mj-image src="https://example.com/c.png" />
+        {{{ unsubscribe_link }}}
+        {{{ physical_address_footer }}}
+      </mj-column>
+    </mj-section>
+  </mj-body>
+</mjml>
+"#;
+        let outcome = lint(src);
+        let alt_findings: Vec<_> = outcome
+            .findings
+            .iter()
+            .filter(|f| f.rule == LintRule::ImageMissingAlt)
+            .collect();
+        assert_eq!(
+            alt_findings.len(),
+            3,
+            "expected 3 ImageMissingAlt findings, got {}: {:?}",
+            alt_findings.len(),
+            alt_findings
+        );
+        // Each finding must carry a distinct line number.
+        let lines: Vec<_> = alt_findings.iter().filter_map(|f| f.line).collect();
+        assert_eq!(lines.len(), 3, "every finding must carry a line number");
+        let mut sorted = lines.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(sorted.len(), 3, "line numbers must be distinct: {lines:?}");
+    }
+
+    #[test]
+    fn reports_all_missing_button_hrefs_with_line_numbers() {
+        // Two buttons, both with href="#". Should emit two findings.
+        let src = r##"---
+name: gap5_multi_button
+subject: "Subject"
+---
+<mjml>
+  <mj-head>
+    <mj-title>Hi</mj-title>
+    <mj-preview>Hi</mj-preview>
+  </mj-head>
+  <mj-body>
+    <mj-section>
+      <mj-column>
+        <mj-button href="#">First</mj-button>
+        <mj-button href="#">Second</mj-button>
+        {{{ unsubscribe_link }}}
+        {{{ physical_address_footer }}}
+      </mj-column>
+    </mj-section>
+  </mj-body>
+</mjml>
+"##;
+        let outcome = lint(src);
+        let href_findings: Vec<_> = outcome
+            .findings
+            .iter()
+            .filter(|f| f.rule == LintRule::ButtonMissingHref)
+            .collect();
+        assert_eq!(
+            href_findings.len(),
+            2,
+            "expected 2 ButtonMissingHref findings, got {}",
+            href_findings.len()
+        );
+        assert!(
+            href_findings.iter().all(|f| f.line.is_some()),
+            "every button finding must have a line number"
+        );
+    }
+
+    // ─── Gap #6 regression test: realistic placeholder size ─────────────────
+
+    #[test]
+    fn placeholder_stubs_match_real_send_html_shape() {
+        // `compile_with_placeholders` now substitutes full <a> + <div> HTML
+        // (matching the real send-time injection in pipeline.rs) instead of
+        // bare URL/address strings. This test verifies the shape.
+        use crate::template::compile::compile_with_placeholders;
+        let src = r#"---
+name: gap6_stub_shape
+subject: "Subject"
+---
+<mjml>
+  <mj-head>
+    <mj-title>Hi</mj-title>
+    <mj-preview>Hi</mj-preview>
+  </mj-head>
+  <mj-body>
+    <mj-section>
+      <mj-column>
+        <mj-text>Body</mj-text>
+        {{{ unsubscribe_link }}}
+        {{{ physical_address_footer }}}
+      </mj-column>
+    </mj-section>
+  </mj-body>
+</mjml>
+"#;
+        let rendered = compile_with_placeholders(src, &serde_json::json!({})).unwrap();
+        // Must contain an actual <a> tag for the unsubscribe link, not a bare URL.
+        assert!(
+            rendered.html.contains("target=\"_blank\">Unsubscribe</a>"),
+            "preview should render unsubscribe as an <a> tag; html: {}",
+            &rendered.html[rendered.html.len().saturating_sub(500)..]
+        );
+        // Must contain the inlined footer <div> with the characteristic style.
+        assert!(
+            rendered.html.contains("font-size:11px"),
+            "preview should render physical address footer as a styled <div>"
+        );
     }
 }
