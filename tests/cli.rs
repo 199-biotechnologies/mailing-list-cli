@@ -2150,3 +2150,112 @@ fn agent_info_lists_phase_6_commands() {
     );
     assert_eq!(v["version"], env!("CARGO_PKG_VERSION"));
 }
+
+// ─── v0.2 load-bearing safety net: broadcast send MUST hard-fail on any
+// unresolved placeholder before a single Resend call goes out. This is the
+// replacement for the v0.1 frontmatter variable schema — we catch the bug at
+// the latest possible moment (when the template is being rendered with real
+// contact data) instead of the earliest possible moment (when the schema was
+// declared). The test creates a template with a typo, wires up a broadcast,
+// and verifies `broadcast send` exits with code 3 before touching email-cli.
+
+#[test]
+fn broadcast_send_hard_fails_on_unresolved_placeholder() {
+    let (tmp, config_path, db_path, cache_dir) = seed_broadcast_env();
+
+    // Overwrite the default simple_ad template with one that references a
+    // variable (`{{ typo_name }}`) that no contact field or built-in
+    // provides. The v0.2 substituter will flag it; `render()` in strict mode
+    // returns `UnresolvedAtSend`; the broadcast pipeline converts that into a
+    // BadInput with code `template_unresolved_placeholder`.
+    let bad_template_path = tmp.path().join("typo.html");
+    std::fs::write(
+        &bad_template_path,
+        r#"<!doctype html>
+<html>
+<body>
+  <h1>Hi {{ first_name }}</h1>
+  <p>Your special offer: {{ typo_name }}</p>
+  <p>{{{ unsubscribe_link }}}<br>{{{ physical_address_footer }}}</p>
+</body>
+</html>
+"#,
+    )
+    .unwrap();
+
+    let mut cmd = Command::cargo_bin("mailing-list-cli").unwrap();
+    cmd.env("MLC_CONFIG_PATH", &config_path)
+        .env("MLC_DB_PATH", &db_path)
+        .env("MLC_CACHE_DIR", &cache_dir)
+        .args([
+            "--json",
+            "template",
+            "create",
+            "with_typo",
+            "--subject",
+            "Hi {{ first_name }}",
+            "--from-file",
+            bad_template_path.to_str().unwrap(),
+        ]);
+    cmd.assert().success();
+
+    // Stage a broadcast that uses the bad template.
+    let mut cmd = Command::cargo_bin("mailing-list-cli").unwrap();
+    cmd.env("MLC_CONFIG_PATH", &config_path)
+        .env("MLC_DB_PATH", &db_path)
+        .env("MLC_CACHE_DIR", &cache_dir)
+        .args([
+            "--json",
+            "broadcast",
+            "create",
+            "--name",
+            "hard-fail-test",
+            "--template",
+            "with_typo",
+            "--to",
+            "list:news",
+        ]);
+    cmd.assert().success();
+
+    // Attempt to send — must exit 3 with `template_unresolved_placeholder`.
+    // No email-cli stub call should be recorded because the render fails
+    // BEFORE the batch file is built.
+    let mut cmd = Command::cargo_bin("mailing-list-cli").unwrap();
+    cmd.env("MLC_CONFIG_PATH", &config_path)
+        .env("MLC_DB_PATH", &db_path)
+        .env("MLC_CACHE_DIR", &cache_dir)
+        .env("MLC_UNSUBSCRIBE_SECRET", "test-secret-long-enough")
+        .args(["--json", "broadcast", "send", "1"]); // seed_broadcast_env doesn't create a broadcast
+    let assert = cmd.assert().failure().code(3);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).unwrap();
+    let v: Value = serde_json::from_str(&stderr).unwrap();
+    assert_eq!(v["status"], "error");
+    let code = v["error"]["code"].as_str().unwrap();
+    assert!(
+        code == "template_unresolved_placeholder" || code == "template_has_lint_errors",
+        "expected template_unresolved_placeholder or template_has_lint_errors, got: {code}"
+    );
+    let message = v["error"]["message"].as_str().unwrap();
+    assert!(
+        message.contains("typo_name") || message.to_lowercase().contains("unresolved"),
+        "error message should mention the unresolved placeholder, got: {message}"
+    );
+
+    // After the hard-fail, the broadcast MUST be in `failed` status, not
+    // stuck in `sending`. This was found during the real-Resend smoke test
+    // against paperfoot.com — the render error bubbled up without reverting
+    // the status. Fix: `broadcast_set_status(id, "failed", None)` on every
+    // render error in the chunk loop.
+    let mut cmd = Command::cargo_bin("mailing-list-cli").unwrap();
+    cmd.env("MLC_CONFIG_PATH", &config_path)
+        .env("MLC_DB_PATH", &db_path)
+        .env("MLC_CACHE_DIR", &cache_dir)
+        .args(["--json", "broadcast", "show", "1"]);
+    let out = cmd.assert().success();
+    let v: Value =
+        serde_json::from_str(&String::from_utf8(out.get_output().stdout.clone()).unwrap()).unwrap();
+    assert_eq!(
+        v["data"]["broadcast"]["status"], "failed",
+        "broadcast must be marked failed after hard-fail, not left in 'sending'"
+    );
+}

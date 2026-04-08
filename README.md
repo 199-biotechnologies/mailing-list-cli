@@ -16,7 +16,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue?style=for-the-badge)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-1.85+-orange?style=for-the-badge&logo=rust&logoColor=white)](https://www.rust-lang.org/)
-[![Status: v0.2.0 email-cli v0.6](https://img.shields.io/badge/Status-v0.2.0_email--cli_v0.6-orange?style=for-the-badge)](#status)
+[![Status: v0.2.1 email-cli v0.6](https://img.shields.io/badge/Status-v0.2.1_email--cli_v0.6-orange?style=for-the-badge)](#status)
 [![Built on Resend](https://img.shields.io/badge/Built_on-Resend-000000?style=for-the-badge)](https://resend.com)
 
 ---
@@ -75,23 +75,24 @@ Synthesized from the research swarm. Directional, not final — every entry belo
 
 | Command | What it does |
 |---|---|
-| `segment create <name> --filter <expr>` | Save a dynamic segment from a filter expression |
+| `segment create <name> --filter-json <json>` | Save a dynamic segment from a JSON AST filter |
 | `segment ls` | All segments with live member counts |
 | `segment members <id>` | List currently-matching contacts |
 
-Filter expressions are boolean: `tag:vip AND opened_last:30d AND NOT bounced`. Segments re-evaluate at send time so a "last 30 days engaged" segment is always fresh.
+Filter expressions are a JSON AST (v0.2 dropped the string DSL — agents emit JSON directly). Example: `{"kind":"and","children":[{"kind":"atom","atom":{"type":"tag","pred":{"kind":"has","name":"vip"}}},{"kind":"atom","atom":{"type":"engagement","atom":{"kind":"opened_last","duration":{"value":30,"unit":"days"}}}}]}`. See `src/segment/ast.rs` for the full shape. Segments re-evaluate at send time.
 
 ### Templates
 
 | Command | What it does |
 |---|---|
-| `template create <name>` | Scaffold a new MJML template with merge tag schema |
+| `template create <name> --subject "..." [--from-file <path>]` | Create a plain-HTML template (or scaffold) |
 | `template ls` | List local templates |
-| `template show <name>` | Render to HTML for inspection |
-| `template lint <name>` | Validate MJML, check merge tag schema, render preview |
-| `template guidelines` | Print the agent authoring guide (rules, examples, gotchas) |
+| `template show <name>` | Print the raw HTML source |
+| `template render <name> --with-data <file>` | Render to JSON envelope with `{subject, html, text}` |
+| `template preview <name> --with-data <file> [--out-dir <path>] [--open]` | Write preview to disk and optionally open in the browser |
+| `template lint <name>` | 6-rule compliance check (CAN-SPAM + size + XSS allowlist + forbidden tags) |
 
-Templates live in a local SQLite store. The CLI ships explicit guidelines an agent loads before authoring, written so an LLM produces output that actually renders in Outlook desktop.
+Templates are plain HTML with `{{ var }}` merge tags and `{{#if }}` conditionals. Triple-brace `{{{ name }}}` is an allowlisted XSS-safe escape hatch, reserved for `unsubscribe_link` and `physical_address_footer` only. The send pipeline hard-fails on any unresolved placeholder before a single email goes out.
 
 ### Broadcasts (Campaigns)
 
@@ -129,8 +130,9 @@ Templates live in a local SQLite store. The CLI ships explicit guidelines an age
 
 | Command | What it does |
 |---|---|
-| `webhook listen --port <n>` | Run a local receiver that mirrors Resend events into local state |
-| `webhook backfill` | Backfill recent events from Resend's API |
+| `webhook poll` / `event poll` | Poll `email-cli email list` for new delivery/bounce/click events and mirror them locally |
+
+v0.2 dropped the long-running HTTP listener (`tiny_http` + Svix HMAC verifier) — running an inbound HTTP server behind NAT is hostile to a local CLI. Polling via `email-cli email list` covers the same use case without the tunneling requirement.
 
 ### Agent tooling
 
@@ -178,7 +180,7 @@ Three layers, each replaceable.
 - **`mailing-list-cli` is the orchestration layer.** It composes campaigns, computes segments, renders templates, enforces suppression, runs A/B tests, and aggregates analytics. It has zero Resend code.
 - **`email-cli` is the transport layer.** It is the only binary that talks to Resend's API. `mailing-list-cli` shells out to it for every send, every audience operation, and every event read.
 - **Local SQLite** stores the things `email-cli` doesn't track: templates, campaign metadata, the suppression list, double opt-in tokens, segment definitions, engagement aggregates, and a mirror of recent events polled from `email-cli`.
-- **MJML + Handlebars** for templates, compiled in-process via the [`mrml`](https://crates.io/crates/mrml) Rust crate — no Node, no external runtime. Merge tags are Mustache-style `{{ first_name }}` because that's the syntax LLMs author most reliably. Templates render to HTML locally before being passed to `email-cli` as a send body.
+- **Plain HTML + hand-rolled `{{ var }}` substitution** for templates. v0.2 dropped MJML, Handlebars, css-inline, html2text, and the YAML frontmatter variable schema — all designed-for-humans safety nets that the agent-loop preview renders unnecessary. Merge tags are Mustache-style `{{ first_name }}` (HTML-escaped) with a hard-coded triple-brace allowlist for `{{{ unsubscribe_link }}}` and `{{{ physical_address_footer }}}`. The compile pipeline is ~500 lines of Rust across `src/template/{subst,render}.rs` with 14 runtime crate dependencies total.
 
 Built following the [agent-cli-framework](https://github.com/199-biotechnologies/agent-cli-framework) patterns: structured JSON output (auto-detected via `IsTerminal`), semantic exit codes (`0/1/2/3/4`), self-describing `agent-info`, no interactive prompts, ever.
 

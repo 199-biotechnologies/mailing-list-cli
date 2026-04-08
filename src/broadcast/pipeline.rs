@@ -162,33 +162,42 @@ pub fn send_broadcast(id: i64) -> Result<PipelineResult, AppError> {
                 "current_year": chrono::Utc::now().format("%Y").to_string(),
                 "broadcast_id": id,
             });
-            let rendered =
-                template::render(&template.html_source, &template.subject, &merge_data)
-                    .map_err(|e| {
-                        // STRICT MODE: unresolved placeholders + lint errors abort
-                        // the send before a single email goes out. This is the
-                        // v0.2 replacement for the v0.1 frontmatter variable
-                        // schema — we catch the problem at the latest possible
-                        // moment (when we have real data) instead of the earliest.
-                        let (code, msg) = match &e {
-                            RenderError::UnresolvedAtSend(_) => (
-                                "template_unresolved_placeholder",
-                                format!("cannot send: {e}"),
-                            ),
-                            RenderError::Lint(_) => (
-                                "template_lint_error",
-                                format!("cannot send: {e}"),
-                            ),
-                        };
-                        AppError::BadInput {
-                            code: code.into(),
-                            message: msg,
-                            suggestion: format!(
-                                "Run `mailing-list-cli template preview {} --open` to fix the template before retrying",
-                                template.name
-                            ),
+            // STRICT MODE: unresolved placeholders + lint errors abort the
+            // send before a single email goes out. This is the v0.2
+            // replacement for the v0.1 frontmatter variable schema — we
+            // catch the problem at the latest possible moment (when we
+            // have real data) instead of the earliest.
+            //
+            // On any error here we MUST revert the broadcast from 'sending'
+            // to 'failed' before bubbling up, otherwise retries would see a
+            // stale status and agents would be confused.
+            let rendered = match template::render(
+                &template.html_source,
+                &template.subject,
+                &merge_data,
+            ) {
+                Ok(r) => r,
+                Err(e) => {
+                    let _ = db.broadcast_set_status(id, "failed", None);
+                    let (code, msg) = match &e {
+                        RenderError::UnresolvedAtSend(_) => (
+                            "template_unresolved_placeholder",
+                            format!("cannot send: {e}"),
+                        ),
+                        RenderError::Lint(_) => {
+                            ("template_lint_error", format!("cannot send: {e}"))
                         }
-                    })?;
+                    };
+                    return Err(AppError::BadInput {
+                        code: code.into(),
+                        message: msg,
+                        suggestion: format!(
+                            "Run `mailing-list-cli template preview {} --open` to fix the template before retrying",
+                            template.name
+                        ),
+                    });
+                }
+            };
             entries.push(BatchEntry {
                 from: sender_from.clone(),
                 to: vec![contact.email.clone()],
