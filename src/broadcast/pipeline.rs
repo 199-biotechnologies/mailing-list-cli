@@ -149,8 +149,11 @@ pub fn send_broadcast(id: i64) -> Result<PipelineResult, AppError> {
                 "<a href=\"{}\" target=\"_blank\">Unsubscribe</a>",
                 html_escape(&unsubscribe_url)
             );
+            // v0.2.3+: inline <span> so the footer is safe to inject inside a
+            // `<p>` wrapper in the template (the scaffold does this). A block
+            // element like `<div>` would create invalid HTML nesting.
             let footer_html = format!(
-                "<div style=\"color:#666;font-size:11px;text-align:center;margin-top:20px\">{}</div>",
+                "<span style=\"color:#666;font-size:11px\">{}</span>",
                 html_escape(&physical_address)
             );
             let merge_data = json!({
@@ -305,8 +308,9 @@ pub fn preview_broadcast(id: i64, to: &str) -> Result<PipelineResult, AppError> 
             }
         })?;
     let unsubscribe_url = format!("{}/{}", config.unsubscribe.public_url, preview_token);
+    // v0.2.3+: inline <span> to match the send path and the v0.2.3 stub shape.
     let footer_html = format!(
-        "<div style=\"color:#666;font-size:11px;text-align:center;margin-top:20px\">{}</div>",
+        "<span style=\"color:#666;font-size:11px\">{}</span>",
         html_escape(&physical_address)
     );
     let merge_data = json!({

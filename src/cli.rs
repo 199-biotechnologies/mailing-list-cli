@@ -57,7 +57,7 @@ pub enum Command {
         #[command(subcommand)]
         action: SegmentAction,
     },
-    /// Manage MJML templates (with the embedded agent authoring guide)
+    /// Manage HTML email templates (plain HTML + `{{ var }}` / `{{#if}}` substitution, 6 lint rules)
     Template {
         #[command(subcommand)]
         action: TemplateAction,
@@ -336,9 +336,9 @@ pub enum TemplateAction {
 pub struct TemplateCreateArgs {
     /// Template name (snake_case)
     pub name: String,
-    /// Subject line (can contain `{{ var }}` merge tags). Required in v0.2+;
-    /// in the v0.1 transitional path it may be omitted and pulled from the
-    /// frontmatter of the `--from-file` source.
+    /// Subject line (required). May itself contain `{{ var }}` merge tags
+    /// (e.g. `--subject "Welcome, {{ first_name }}"`), which are resolved at
+    /// send time against the contact's merge data.
     #[arg(long)]
     pub subject: Option<String>,
     /// Import HTML body from this file path. If omitted, a built-in scaffold is used.
@@ -357,9 +357,12 @@ pub struct TemplateRenderArgs {
     /// JSON file with merge data (an object: { "first_name": "Alice" })
     #[arg(long = "with-data")]
     pub with_data: Option<std::path::PathBuf>,
-    /// Substitute placeholder stubs for unsubscribe_link and physical_address_footer
-    #[arg(long = "with-placeholders")]
-    pub with_placeholders: bool,
+    /// Leave `{{{ unsubscribe_link }}}` and `{{{ physical_address_footer }}}` literal
+    /// instead of substituting placeholder stubs. By default, both are auto-injected
+    /// with realistic stub values so the output is viewable HTML (matching `template
+    /// preview`). Use `--raw` when piping to a downstream substituter or custom sender.
+    #[arg(long)]
+    pub raw: bool,
 }
 
 #[derive(Args, Debug)]
@@ -368,7 +371,9 @@ pub struct TemplatePreviewArgs {
     /// JSON file with merge data (an object: { "first_name": "Alice" })
     #[arg(long = "with-data")]
     pub with_data: Option<std::path::PathBuf>,
-    /// Output directory for preview artifacts. Defaults to $MLC_CACHE_DIR/preview/<name>/
+    /// Output directory for preview artifacts. Defaults to $MLC_CACHE_DIR/preview/<name>/.
+    /// Three files are written: `index.html` (rendered HTML), `plain.txt` (text fallback),
+    /// and `subject.txt` (rendered subject).
     #[arg(long = "out-dir")]
     pub out_dir: Option<std::path::PathBuf>,
     /// Open the rendered HTML in the default browser (macOS `open`, Linux `xdg-open`, Windows `start`)

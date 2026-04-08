@@ -16,7 +16,47 @@ use serde_json::{Value, json};
 /// The scaffold IS the documentation: there's no separate `template
 /// guidelines` command anymore. A strong scaffold + a fast preview loop
 /// replaces a 153-line embedded guide.
-const SCAFFOLD: &str = r##"<!doctype html>
+const SCAFFOLD: &str = r##"<!--
+  mailing-list-cli template — quick reference (v0.2.3+).
+
+  Supported substitution syntax (nothing else, agents take note):
+    {{ var }}         — HTML-escaped substitution for contact fields
+    {{{ var }}}       — raw (unescaped) substitution. ALLOWLISTED to exactly
+                         {{{ unsubscribe_link }}} and {{{ physical_address_footer }}}
+                         because those are injected as HTML at send time.
+                         Using triple-brace for anything else is an XSS risk
+                         and a lint error.
+    {{#if name}}...{{/if}}          — render block if merge field is truthy
+    {{#unless name}}...{{/unless}}  — render block if merge field is absent/falsy
+    Conditionals nest and can be paired (see body below).
+
+  NOT supported (don't reach for them — they'll render literally or error):
+    - Handlebars helpers other than `if` / `unless` (no `{{#each}}`, no `{{#with}}`)
+    - MJML tags (no `<mj-*>` — v0.2 deleted the MJML stack)
+    - Partials, block helpers, custom functions
+    - Liquid / Jinja / Django syntax
+
+  How this gets sent:
+    - `--subject` itself can contain `{{ var }}` tags ("Hi, {{ first_name }}").
+    - Any unresolved `{{ var }}` at send time is a HARD FAIL (broadcast aborts,
+      status → failed). `{{#if}}` branches with absent data are treated as
+      falsy and do not count as unresolved.
+    - `broadcast send` uses strict render mode; `template preview` uses
+      lenient mode and injects realistic stubs for the two allowlisted
+      triple-brace tokens so the preview HTML is viewable.
+
+  The 6 lint rules (`template lint <name>`):
+    1. body contains `{{{ unsubscribe_link }}}`
+    2. body contains `{{{ physical_address_footer }}}`
+    3. final HTML < 102 KB (Gmail clip limit)
+    4. no `<script>`, `<iframe>`, `<object>`, `<embed>`, `<form>` tags
+    5. no triple-brace used outside the two allowlist names
+    6. structural sanity (subject non-empty, etc.)
+
+  Delete this comment once you're done reading it — the final sent email
+  carries whatever is in the source.
+-->
+<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
@@ -34,10 +74,20 @@ const SCAFFOLD: &str = r##"<!doctype html>
               </h1>
               <p style="margin:0 0 16px;font-size:16px;line-height:1.5;color:#333">
                 Replace this body with your content. Write normal HTML with
-                inline styles for best client compatibility. Use
-                <code>{{ merge_tag }}</code> for contact fields and
-                <code>{{#if name}}...{{/if}}</code> for conditionals.
+                inline styles for best client compatibility. Use double-brace
+                merge tags (see the comment above this template) for contact
+                fields.
               </p>
+              {{#if referral_code}}
+              <p style="margin:0 0 16px;font-size:16px;line-height:1.5;color:#333">
+                You used referral code <strong>{{ referral_code }}</strong>, so your first order ships free.
+              </p>
+              {{/if}}
+              {{#unless referral_code}}
+              <p style="margin:0 0 16px;font-size:16px;line-height:1.5;color:#333">
+                No referral code this time — welcome aboard anyway.
+              </p>
+              {{/unless}}
               <p style="margin:0 0 16px">
                 <a href="https://example.com/cta"
                    style="display:inline-block;padding:12px 24px;background:#000;color:#fff;text-decoration:none;border-radius:4px;font-weight:600">
@@ -173,15 +223,18 @@ fn render(format: Format, args: TemplateRenderArgs) -> Result<(), AppError> {
             suggestion: "Run `mailing-list-cli template ls`".into(),
         })?;
     let mut data = load_merge_data(args.with_data.as_ref())?;
-    if args.with_placeholders {
-        // Inject stub values for the two reserved triple-brace names so the
-        // preview shows exactly what agents will see in a real send.
+    // Default: inject realistic stubs for the two reserved triple-brace names
+    // so the output is viewable HTML and matches what `template preview`
+    // produces. Pass `--raw` to leave them literal (for piping to a downstream
+    // substituter). Note: the stubs are inline elements (`<a>` and `<span>`)
+    // so they're safe to place inside a `<p>` or other inline context.
+    if !args.raw {
         if let Value::Object(map) = &mut data {
             map.entry(String::from("unsubscribe_link")).or_insert(json!(
                 "<a href=\"https://hooks.example.invalid/u/PLACEHOLDER_UNSUBSCRIBE_TOKEN\" target=\"_blank\">Unsubscribe</a>"
             ));
             map.entry(String::from("physical_address_footer")).or_insert(json!(
-                "<div style=\"color:#666;font-size:11px;text-align:center;margin-top:20px\">Your Company Name · 123 Example Street · City, ST 00000</div>"
+                "<span style=\"color:#666;font-size:11px\">Your Company Name · 123 Example Street · City, ST 00000</span>"
             ));
         }
     }
@@ -224,8 +277,11 @@ fn preview(format: Format, args: TemplatePreviewArgs) -> Result<(), AppError> {
         map.entry(String::from("unsubscribe_link")).or_insert(json!(
             "<a href=\"https://hooks.example.invalid/u/PLACEHOLDER_UNSUBSCRIBE_TOKEN\" target=\"_blank\">Unsubscribe</a>"
         ));
+        // Inline <span> stub so it's safe to inject inside a `<p>` or any other
+        // inline context in the template — matches the broadcast pipeline's
+        // footer HTML shape in v0.2.3+.
         map.entry(String::from("physical_address_footer")).or_insert(json!(
-            "<div style=\"color:#666;font-size:11px;text-align:center;margin-top:20px\">Your Company Name · 123 Example Street · City, ST 00000</div>"
+            "<span style=\"color:#666;font-size:11px\">Your Company Name · 123 Example Street · City, ST 00000</span>"
         ));
         map.entry(String::from("first_name"))
             .or_insert(json!("Preview"));

@@ -73,7 +73,7 @@ pub fn run() {
         "auto_json_when_piped": true,
         "env_prefix": "MLC_",
         "depends_on": ["email-cli >= 0.6.0"],
-        "status": "v0.2.2 — real-Resend validated; broadcast state fix; race-free env-var tests; CI pinned to --test-threads=1"
+        "status": "v0.2.3 — blind-test polish: scaffold expanded with quick-reference comment, plain-text fallback decodes named/numeric HTML entities, `<span>` footer stub (safe to inject inside `<p>`), `template render` defaults to injected stubs (use `--raw` for literal tokens), stale MJML help strings removed"
     });
     println!("{}", serde_json::to_string_pretty(&manifest).unwrap());
 }

@@ -131,10 +131,23 @@ fn render_inner(
     data: &serde_json::Value,
     strict: bool,
 ) -> Rendered {
+    // Strip HTML comments BEFORE substitution and lint scanning. Comments are
+    // author-facing documentation (the built-in scaffold uses one as a
+    // quick-reference), not content for the recipient. Leaving them in would:
+    //   - let literal `<script>` / `<iframe>` text inside a comment trip the
+    //     `forbidden_tag` lint rule
+    //   - let literal `{{{ var }}}` text inside a comment trip the
+    //     `forbidden_raw_injection` lint rule
+    //   - ship author comments to subscribers (mild bandwidth waste and a bit
+    //     of information leakage)
+    // The raw source in the DB is unchanged — `template show` still prints
+    // the comment so agents can read it.
+    let html_source = strip_html_comments(html_source);
+
     // Subject goes through substitution too — agents put `{{ first_name }}`
     // in subjects all the time.
     let subject_sub = substitute(subject_source, data);
-    let body_sub = substitute(html_source, data);
+    let body_sub = substitute(&html_source, data);
 
     let mut findings = Vec::new();
 
@@ -296,17 +309,134 @@ fn html_to_text(html: &str) -> String {
         }
     }
 
-    // Unescape common HTML entities (cheap + complete enough for our needs).
-    let unescaped = out
-        .replace("&amp;", "&")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .replace("&#39;", "'")
-        .replace("&nbsp;", " ");
+    // Unescape HTML entities. We cover:
+    //   - the five XML-safe primitives (`&amp;`, `&lt;`, `&gt;`, `&quot;`, `&#39;`)
+    //   - `&nbsp;` → ' '
+    //   - common typographic named entities agents are likely to reach for
+    //     (em-dash, en-dash, curly quotes, ellipsis, bullet, middot, copyright,
+    //     registered, trademark, degree, plus-minus, multiply, divide)
+    //   - decimal numeric character references `&#NNN;`
+    //   - hexadecimal numeric character references `&#xHH;` (case-insensitive)
+    //
+    // `&amp;` is unescaped LAST so named entities containing a literal `&amp;`
+    // (which should never happen in compliant HTML but might appear in wild
+    // copy) aren't double-unescaped into garbage.
+    let unescaped = unescape_entities(&out);
 
     // Collapse consecutive whitespace while preserving double-newlines.
     collapse_whitespace(&unescaped)
+}
+
+/// Strip HTML comments (`<!-- ... -->`) from the source. Comments nest
+/// illegally in HTML so we use a flat non-greedy scan. Multi-line comments
+/// are fine; unterminated comments consume to EOF (consistent with how most
+/// HTML parsers recover from malformed input).
+///
+/// Called by `render_inner` before substitution + lint scan. The raw source
+/// in the database is unchanged; this is a render-time transform only.
+fn strip_html_comments(source: &str) -> String {
+    let mut out = String::with_capacity(source.len());
+    let mut i = 0;
+    let bytes = source.as_bytes();
+    while i < bytes.len() {
+        if source[i..].starts_with("<!--") {
+            if let Some(close) = source[i + 4..].find("-->") {
+                i += 4 + close + 3; // skip past `-->`
+                continue;
+            }
+            // Unterminated comment → drop everything from here to EOF.
+            break;
+        }
+        let ch = source[i..].chars().next().unwrap();
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    out
+}
+
+/// Decode common HTML entities into their literal characters for the
+/// plain-text MIME alternative. We handle:
+///   - the five XML-safe primitives plus `&nbsp;`
+///   - a curated set of typographic named entities that product copy is
+///     likely to use (em-dash, curly quotes, ellipsis, copyright, etc.)
+///   - decimal numeric character references `&#NNN;`
+///   - hexadecimal numeric character references `&#xHH;`
+///
+/// Anything unknown is left literal. We deliberately do not include a huge
+/// HTML5 entity table — the goal is "text version of marketing copy" not
+/// "general-purpose HTML parser".
+fn unescape_entities(s: &str) -> String {
+    // Two passes. First pass: numeric character references via a manual
+    // scanner (so we can handle `&#NNN;` and `&#xHH;` without regex). Second
+    // pass: a fixed list of named entities via `str::replace` (simpler and
+    // sufficient for a short list). Named entities are matched by longest
+    // first to avoid partial matches like `&amp;` being hit by `&amp` first.
+    let mut out = String::with_capacity(s.len());
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'&' && i + 1 < bytes.len() && bytes[i + 1] == b'#' {
+            // Numeric reference. Look for the terminating semicolon within
+            // a reasonable distance (max 8 digits).
+            let start = i + 2;
+            let is_hex = start < bytes.len() && (bytes[start] == b'x' || bytes[start] == b'X');
+            let num_start = if is_hex { start + 1 } else { start };
+            let mut end = num_start;
+            while end < bytes.len() && end < num_start + 8 && bytes[end] != b';' {
+                end += 1;
+            }
+            if end < bytes.len() && bytes[end] == b';' && end > num_start {
+                let digits = &s[num_start..end];
+                let parsed = if is_hex {
+                    u32::from_str_radix(digits, 16).ok()
+                } else {
+                    digits.parse::<u32>().ok()
+                };
+                if let Some(code) = parsed {
+                    if let Some(ch) = char::from_u32(code) {
+                        out.push(ch);
+                        i = end + 1;
+                        continue;
+                    }
+                }
+            }
+        }
+        out.push(s[i..].chars().next().unwrap());
+        i += s[i..].chars().next().unwrap().len_utf8();
+    }
+
+    // Named entities. Order matters when one is a prefix of another
+    // (`&nbsp;` vs `&nb`), but since we only match exact semicolon-terminated
+    // sequences, `str::replace` is safe.
+    out = out
+        .replace("&mdash;", "—")
+        .replace("&ndash;", "–")
+        .replace("&hellip;", "…")
+        .replace("&bull;", "•")
+        .replace("&middot;", "·")
+        .replace("&lsquo;", "‘")
+        .replace("&rsquo;", "’")
+        .replace("&ldquo;", "“")
+        .replace("&rdquo;", "”")
+        .replace("&laquo;", "«")
+        .replace("&raquo;", "»")
+        .replace("&copy;", "©")
+        .replace("&reg;", "®")
+        .replace("&trade;", "™")
+        .replace("&deg;", "°")
+        .replace("&plusmn;", "±")
+        .replace("&times;", "×")
+        .replace("&divide;", "÷")
+        .replace("&infin;", "∞")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'")
+        .replace("&#39;", "'")
+        .replace("&nbsp;", " ")
+        // `&amp;` last so decoded entities don't re-enter the table.
+        .replace("&amp;", "&");
+    out
 }
 
 fn collapse_whitespace(s: &str) -> String {
@@ -348,7 +478,7 @@ pub fn lint(html_source: &str, subject_source: &str) -> Rendered {
         "current_year": 2026,
         "broadcast_id": 0,
         "unsubscribe_link": "<a href=\"https://hooks.example.invalid/u/PLACEHOLDER_UNSUBSCRIBE_TOKEN_aaaaaaaaaaaaaaaaaaaaaaaaaa\" target=\"_blank\">Unsubscribe</a>",
-        "physical_address_footer": "<div style=\"color:#666;font-size:11px;text-align:center;margin-top:20px\">Your Company Name · 123 Example Street · Suite 400 · City, ST 00000 · United States</div>"
+        "physical_address_footer": "<span style=\"color:#666;font-size:11px\">Your Company Name · 123 Example Street · Suite 400 · City, ST 00000 · United States</span>"
     });
     let mut r = render_preview(html_source, subject_source, &stub);
     // Strip unresolved findings so lint focuses on structural/security issues.
@@ -486,5 +616,118 @@ mod tests {
             &json!({"first_name": "Alice"}),
         );
         assert_eq!(r.subject, "Welcome, Alice");
+    }
+
+    #[test]
+    fn unescape_named_typographic_entities() {
+        // Named entities that product copy is likely to reach for.
+        let html = r#"<p>Morning &mdash; here&rsquo;s your order &copy; 2026. Use code &ldquo;WELCOME&rdquo; &bull; valid for 7 days &hellip;</p>"#;
+        let text = html_to_text(html);
+        assert!(text.contains("—"), "em-dash should decode, got: {text}");
+        assert!(text.contains("’"), "right single quote should decode");
+        assert!(text.contains("©"), "copyright should decode");
+        assert!(text.contains("“"), "left double quote should decode");
+        assert!(text.contains("”"), "right double quote should decode");
+        assert!(text.contains("•"), "bullet should decode");
+        assert!(text.contains("…"), "ellipsis should decode");
+        assert!(
+            !text.contains("&mdash;") && !text.contains("&copy;"),
+            "literal entity text must not survive decoding"
+        );
+    }
+
+    #[test]
+    fn unescape_numeric_character_references() {
+        // Decimal and hex numeric refs must decode too.
+        let html = r#"<p>Decimal: &#8212; &#169; &#8226;. Hex: &#x2014; &#xA9; &#x2022;.</p>"#;
+        let text = html_to_text(html);
+        // Both em-dash and copyright should appear twice (once from each form).
+        assert_eq!(text.matches('—').count(), 2, "got: {text}");
+        assert_eq!(text.matches('©').count(), 2, "got: {text}");
+        assert_eq!(text.matches('•').count(), 2, "got: {text}");
+        assert!(
+            !text.contains("&#") && !text.contains("&#x"),
+            "literal numeric ref text must not survive decoding"
+        );
+    }
+
+    #[test]
+    fn unescape_mixed_entities_and_primitives() {
+        // Legacy primitives still work alongside the new entries.
+        let html = r#"<p>Q&amp;A: Is 5 &lt; 10 &amp; 15 &gt; 10? &mdash; yes.</p>"#;
+        let text = html_to_text(html);
+        assert!(text.contains("Q&A"));
+        assert!(text.contains("5 < 10 & 15 > 10"));
+        assert!(text.contains("—"));
+    }
+
+    #[test]
+    fn html_comments_are_stripped_before_lint_and_substitution() {
+        // Comment contains literal `<script>`, `{{{ foo }}}`, and a `{{ bar }}`
+        // merge tag — none should trip lint because comments are author docs.
+        let source = r##"<!--
+          Author notes:
+          - don't use <script> or <iframe>
+          - don't use {{{ raw }}} outside the allowlist
+          - sample merge tag: {{ bar }}
+        -->
+<p>Real body: {{ first_name }}</p>
+<p>{{{ unsubscribe_link }}}</p>
+<p>{{{ physical_address_footer }}}</p>"##;
+        let r = render_preview(source, "s", &json!({"first_name": "Alice"}));
+        assert_eq!(
+            r.findings
+                .iter()
+                .filter(|f| f.severity == Severity::Error)
+                .count(),
+            0,
+            "comment content should not trigger lint errors, got: {:?}",
+            r.findings
+        );
+        // And the rendered HTML should not contain the comment itself.
+        assert!(!r.html.contains("Author notes"), "got: {}", r.html);
+        assert!(!r.html.contains("<script"));
+        // And the substituter should not have processed `{{ bar }}` inside
+        // the comment (so it shouldn't be in unresolved either).
+        assert!(
+            !r.unresolved.iter().any(|u| u == "bar"),
+            "got unresolved: {:?}",
+            r.unresolved
+        );
+        // Real body is still rendered.
+        assert!(r.html.contains("Real body: Alice"));
+    }
+
+    #[test]
+    fn unterminated_comment_drops_to_eof() {
+        let source = r##"<p>before</p><!-- never closed <p>{{{ unsubscribe_link }}}</p><p>{{{ physical_address_footer }}}</p>"##;
+        let r = render_preview(source, "s", &json!({}));
+        // The unterminated comment swallows the rest of the template including
+        // the two required placeholders, so lint should fail on both.
+        assert!(
+            r.findings
+                .iter()
+                .any(|f| f.rule == LintRule::UnsubscribeLinkMissing),
+            "got: {:?}",
+            r.findings
+        );
+        assert!(
+            r.findings
+                .iter()
+                .any(|f| f.rule == LintRule::PhysicalAddressFooterMissing),
+            "got: {:?}",
+            r.findings
+        );
+    }
+
+    #[test]
+    fn unescape_leaves_unknown_entities_literal() {
+        // Unknown entities pass through untouched (better a literal &foo; than
+        // a silent wrong character).
+        let html = r#"<p>Mystery: &nonexistent; and &maybe; and &1invalid;</p>"#;
+        let text = html_to_text(html);
+        assert!(text.contains("&nonexistent;"), "got: {text}");
+        assert!(text.contains("&maybe;"));
+        assert!(text.contains("&1invalid;"));
     }
 }
