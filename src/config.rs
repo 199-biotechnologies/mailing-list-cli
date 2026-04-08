@@ -46,10 +46,29 @@ fn default_webhook_port() -> u16 {
     8081
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UnsubscribeConfig {
-    pub public_url: Option<String>,
-    pub secret_env: Option<String>,
+    #[serde(default = "default_unsubscribe_public_url")]
+    pub public_url: String,
+    #[serde(default = "default_unsubscribe_secret_env")]
+    pub secret_env: String,
+}
+
+impl Default for UnsubscribeConfig {
+    fn default() -> Self {
+        Self {
+            public_url: default_unsubscribe_public_url(),
+            secret_env: default_unsubscribe_secret_env(),
+        }
+    }
+}
+
+fn default_unsubscribe_public_url() -> String {
+    "https://hooks.yourdomain.com/u".to_string()
+}
+
+fn default_unsubscribe_secret_env() -> String {
+    "MLC_UNSUBSCRIBE_SECRET".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
