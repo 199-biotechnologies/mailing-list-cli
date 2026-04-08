@@ -397,6 +397,11 @@ fn stub_data_for_variables(schema: &crate::template::frontmatter::VarSchema) -> 
 }
 
 /// Extract `{{ name }}` and `{{{ name }}}` identifiers from the template body.
+/// Handlebars control keywords that appear inside `{{ }}` but are NOT merge tag
+/// variables. Without this list, `{{else}}` is falsely reported as an
+/// undeclared variable `else`.
+const HANDLEBARS_KEYWORDS: &[&str] = &["else", "if", "unless", "each", "with", "this"];
+
 fn extract_merge_tag_names(body: &str) -> Vec<String> {
     let mut out = Vec::new();
     let bytes = body.as_bytes();
@@ -412,14 +417,20 @@ fn extract_merge_tag_names(body: &str) -> Vec<String> {
             // Find the closing `}}`
             if let Some(close_rel) = body[start..].find("}}") {
                 let inner = body[start..start + close_rel].trim();
-                // skip helpers like `{{#if ...}}` — they start with #
-                if !inner.starts_with('#') && !inner.starts_with('/') && !inner.is_empty() {
+                // Skip helpers like `{{#if ...}}` / `{{/if}}` / `{{> partial}}`
+                if !inner.starts_with('#')
+                    && !inner.starts_with('/')
+                    && !inner.starts_with('>')
+                    && !inner.starts_with('!')
+                    && !inner.is_empty()
+                {
                     // An identifier, possibly with leading triple-brace trimmed already
                     let name: String = inner
                         .chars()
                         .take_while(|c| c.is_alphanumeric() || *c == '_')
                         .collect();
-                    if !name.is_empty() {
+                    // Skip Handlebars control keywords (else, if, unless, each, with, this)
+                    if !name.is_empty() && !HANDLEBARS_KEYWORDS.contains(&name.as_str()) {
                         out.push(name);
                     }
                 }
@@ -559,5 +570,58 @@ variables:
                 .iter()
                 .any(|f| f.rule == LintRule::SubjectTooLong)
         );
+    }
+
+    #[test]
+    fn handlebars_keywords_are_not_flagged_as_variables() {
+        // Regression: {{else}}, {{if}}, {{unless}} must not be reported as
+        // undeclared variables. Found via blind test: agents authored templates
+        // with `{{#if workspace_name}}...{{else}}...{{/if}}` and the lint
+        // falsely reported `else` as an undeclared variable.
+        let src = r#"---
+name: regression
+subject: "Hi {{ first_name }}"
+variables:
+  - name: first_name
+    type: string
+    required: true
+  - name: workspace_name
+    type: string
+    required: false
+---
+<mjml>
+  <mj-head>
+    <mj-title>Hi</mj-title>
+    <mj-preview>Hello</mj-preview>
+  </mj-head>
+  <mj-body>
+    <mj-section>
+      <mj-column>
+        <mj-text>Hi {{ first_name }}</mj-text>
+        {{#if workspace_name}}
+          <mj-text>Workspace: {{ workspace_name }}</mj-text>
+        {{else}}
+          <mj-text>No workspace yet</mj-text>
+        {{/if}}
+        {{{ unsubscribe_link }}}
+        {{{ physical_address_footer }}}
+      </mj-column>
+    </mj-section>
+  </mj-body>
+</mjml>
+"#;
+        let outcome = lint(src);
+        // Should NOT flag `else`, `if`, `unless` as undeclared variables
+        let undeclared: Vec<_> = outcome
+            .findings
+            .iter()
+            .filter(|f| f.rule == LintRule::UndeclaredVariable)
+            .map(|f| f.message.clone())
+            .collect();
+        assert!(
+            undeclared.is_empty(),
+            "handlebars keywords must not be flagged as undeclared variables, got: {undeclared:?}"
+        );
+        assert_eq!(outcome.error_count, 0, "findings: {:?}", outcome.findings);
     }
 }
