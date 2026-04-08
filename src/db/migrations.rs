@@ -1,5 +1,6 @@
 /// Embedded migrations applied in order. The migration runner skips already-applied versions.
-pub const MIGRATIONS: &[(&str, &str)] = &[(
+pub const MIGRATIONS: &[(&str, &str)] = &[
+    (
     "0001_initial",
     r#"
     CREATE TABLE list (
@@ -184,4 +185,18 @@ pub const MIGRATIONS: &[(&str, &str)] = &[(
         redeemed_at TEXT
     );
     "#,
-)];
+    ),
+    (
+        "0002_event_idempotency_and_kv",
+        r#"
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_event_dedup
+            ON event(resend_email_id, type);
+
+        CREATE TABLE IF NOT EXISTS kv (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        "#,
+    ),
+];
