@@ -1230,10 +1230,7 @@ impl Db {
 
     /// Resolve a segment by its primary key id.
     #[allow(dead_code)]
-    pub fn segment_get_by_id(
-        &self,
-        id: i64,
-    ) -> Result<Option<crate::models::Segment>, AppError> {
+    pub fn segment_get_by_id(&self, id: i64) -> Result<Option<crate::models::Segment>, AppError> {
         let row = self.conn.query_row(
             "SELECT id, name, filter_json, created_at FROM segment WHERE id = ?1",
             params![id],
@@ -1666,7 +1663,9 @@ mod tests {
         let tmp = tempfile::NamedTempFile::new().unwrap();
         let db = Db::open_at(tmp.path()).unwrap();
         // Need a template to satisfy FK
-        let tid = db.template_upsert("t", "Hi", "<mjml></mjml>", "{}").unwrap();
+        let tid = db
+            .template_upsert("t", "Hi", "<mjml></mjml>", "{}")
+            .unwrap();
         let list_id = db.list_create("news", None, "seg_x").unwrap();
 
         let bid = db.broadcast_create("Q1", tid, "list", list_id).unwrap();
@@ -1694,13 +1693,16 @@ mod tests {
     fn broadcast_recipient_crud() {
         let tmp = tempfile::NamedTempFile::new().unwrap();
         let db = Db::open_at(tmp.path()).unwrap();
-        let tid = db.template_upsert("t", "Hi", "<mjml></mjml>", "{}").unwrap();
+        let tid = db
+            .template_upsert("t", "Hi", "<mjml></mjml>", "{}")
+            .unwrap();
         let list_id = db.list_create("news", None, "seg_x").unwrap();
         let bid = db.broadcast_create("Q1", tid, "list", list_id).unwrap();
         let cid = db.contact_upsert("alice@example.com", None, None).unwrap();
 
         db.broadcast_recipient_insert(bid, cid, "pending").unwrap();
-        db.broadcast_recipient_mark_sent(bid, cid, "em_abc").unwrap();
+        db.broadcast_recipient_mark_sent(bid, cid, "em_abc")
+            .unwrap();
         assert_eq!(
             db.broadcast_recipient_count_by_status(bid, "sent").unwrap(),
             1

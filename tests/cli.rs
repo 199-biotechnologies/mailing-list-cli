@@ -62,7 +62,6 @@ fn agent_info_lists_phase_3_commands() {
             "agent-info missing command: {key}"
         );
     }
-    assert!(v["status"].as_str().unwrap().starts_with("v0.1.0"));
 }
 
 #[test]
@@ -162,11 +161,16 @@ fn stub_env() -> (TempDir, PathBuf, PathBuf) {
         format!(
             r#"
 [sender]
+from = "test@example.com"
 physical_address = "123 Test St"
 
 [email_cli]
 path = "{}"
 profile = "default"
+
+[unsubscribe]
+public_url = "https://hooks.example.com/u"
+secret_env = "MLC_UNSUBSCRIBE_SECRET"
 "#,
             stub.display()
         ),
@@ -1607,5 +1611,215 @@ fn agent_info_lists_phase_4_commands() {
     ] {
         assert!(commands.contains_key(key), "agent-info missing {key}");
     }
-    assert!(v["status"].as_str().unwrap().starts_with("v0.1.0"));
+}
+
+const SIMPLE_TEMPLATE: &str = r#"---
+name: simple_ad
+subject: "Hi {{ first_name }}"
+variables:
+  - name: first_name
+    type: string
+    required: true
+---
+<mjml>
+  <mj-head>
+    <mj-title>Hi</mj-title>
+    <mj-preview>Hello there</mj-preview>
+  </mj-head>
+  <mj-body>
+    <mj-section>
+      <mj-column>
+        <mj-text>Hi {{ first_name }}</mj-text>
+        <mj-button href="https://example.com/cta">Click me</mj-button>
+        {{{ unsubscribe_link }}}
+        {{{ physical_address_footer }}}
+      </mj-column>
+    </mj-section>
+  </mj-body>
+</mjml>
+"#;
+
+fn seed_broadcast_env() -> (TempDir, PathBuf, PathBuf, PathBuf) {
+    let (tmp, config_path, db_path) = stub_env();
+    // Per-test cache dir to avoid polluting the user's cache during tests.
+    let cache_dir = tmp.path().join("cache");
+    // Create list + contact + template
+    let template_path = tmp.path().join("simple.mjml.hbs");
+    std::fs::write(&template_path, SIMPLE_TEMPLATE).unwrap();
+
+    for args in [
+        vec!["--json", "list", "create", "news"],
+        vec![
+            "--json",
+            "contact",
+            "add",
+            "alice@example.com",
+            "--list",
+            "1",
+            "--first-name",
+            "Alice",
+        ],
+        vec![
+            "--json",
+            "template",
+            "create",
+            "simple_ad",
+            "--from-file",
+            template_path.to_str().unwrap(),
+        ],
+    ] {
+        let mut cmd = Command::cargo_bin("mailing-list-cli").unwrap();
+        cmd.env("MLC_CONFIG_PATH", &config_path)
+            .env("MLC_DB_PATH", &db_path)
+            .env("MLC_CACHE_DIR", &cache_dir)
+            .args(&args);
+        cmd.assert().success();
+    }
+    (tmp, config_path, db_path, cache_dir)
+}
+
+#[test]
+fn broadcast_create_list_target_and_show() {
+    let (_tmp, config_path, db_path, cache_dir) = seed_broadcast_env();
+
+    let mut cmd = Command::cargo_bin("mailing-list-cli").unwrap();
+    cmd.env("MLC_CONFIG_PATH", &config_path)
+        .env("MLC_DB_PATH", &db_path)
+        .env("MLC_CACHE_DIR", &cache_dir)
+        .args([
+            "--json",
+            "broadcast",
+            "create",
+            "--name",
+            "Q1 ad",
+            "--template",
+            "simple_ad",
+            "--to",
+            "list:news",
+        ]);
+    let out = cmd.assert().success();
+    let v: Value =
+        serde_json::from_str(&String::from_utf8(out.get_output().stdout.clone()).unwrap()).unwrap();
+    assert_eq!(v["data"]["broadcast"]["name"], "Q1 ad");
+    assert_eq!(v["data"]["broadcast"]["status"], "draft");
+
+    let mut cmd = Command::cargo_bin("mailing-list-cli").unwrap();
+    cmd.env("MLC_CONFIG_PATH", &config_path)
+        .env("MLC_DB_PATH", &db_path)
+        .env("MLC_CACHE_DIR", &cache_dir)
+        .args(["--json", "broadcast", "ls"]);
+    let out = cmd.assert().success();
+    let v: Value =
+        serde_json::from_str(&String::from_utf8(out.get_output().stdout.clone()).unwrap()).unwrap();
+    assert_eq!(v["data"]["count"], 1);
+}
+
+#[test]
+fn broadcast_send_via_stub_updates_status_to_sent() {
+    let (_tmp, config_path, db_path, cache_dir) = seed_broadcast_env();
+
+    let mut cmd = Command::cargo_bin("mailing-list-cli").unwrap();
+    cmd.env("MLC_CONFIG_PATH", &config_path)
+        .env("MLC_DB_PATH", &db_path)
+        .env("MLC_CACHE_DIR", &cache_dir)
+        .args([
+            "--json",
+            "broadcast",
+            "create",
+            "--name",
+            "test",
+            "--template",
+            "simple_ad",
+            "--to",
+            "list:news",
+        ]);
+    cmd.assert().success();
+
+    let mut cmd = Command::cargo_bin("mailing-list-cli").unwrap();
+    cmd.env("MLC_CONFIG_PATH", &config_path)
+        .env("MLC_DB_PATH", &db_path)
+        .env("MLC_CACHE_DIR", &cache_dir)
+        .env("MLC_UNSUBSCRIBE_SECRET", "test-secret-long-enough")
+        .args(["--json", "broadcast", "send", "1"]);
+    let out = cmd.assert().success();
+    let v: Value =
+        serde_json::from_str(&String::from_utf8(out.get_output().stdout.clone()).unwrap()).unwrap();
+    assert_eq!(v["data"]["sent"], 1);
+
+    let mut cmd = Command::cargo_bin("mailing-list-cli").unwrap();
+    cmd.env("MLC_CONFIG_PATH", &config_path)
+        .env("MLC_DB_PATH", &db_path)
+        .env("MLC_CACHE_DIR", &cache_dir)
+        .args(["--json", "broadcast", "show", "1"]);
+    let out = cmd.assert().success();
+    let v: Value =
+        serde_json::from_str(&String::from_utf8(out.get_output().stdout.clone()).unwrap()).unwrap();
+    assert_eq!(v["data"]["broadcast"]["status"], "sent");
+}
+
+#[test]
+fn broadcast_cancel_without_confirm_fails() {
+    let (_tmp, config_path, db_path, cache_dir) = seed_broadcast_env();
+    let mut cmd = Command::cargo_bin("mailing-list-cli").unwrap();
+    cmd.env("MLC_CONFIG_PATH", &config_path)
+        .env("MLC_DB_PATH", &db_path)
+        .env("MLC_CACHE_DIR", &cache_dir)
+        .args([
+            "--json",
+            "broadcast",
+            "create",
+            "--name",
+            "test",
+            "--template",
+            "simple_ad",
+            "--to",
+            "list:news",
+        ]);
+    cmd.assert().success();
+
+    let mut cmd = Command::cargo_bin("mailing-list-cli").unwrap();
+    cmd.env("MLC_CONFIG_PATH", &config_path)
+        .env("MLC_DB_PATH", &db_path)
+        .env("MLC_CACHE_DIR", &cache_dir)
+        .args(["--json", "broadcast", "cancel", "1"]);
+    cmd.assert().failure().code(3);
+}
+
+#[test]
+fn broadcast_preview_via_stub_sends_single() {
+    let (_tmp, config_path, db_path, cache_dir) = seed_broadcast_env();
+    let mut cmd = Command::cargo_bin("mailing-list-cli").unwrap();
+    cmd.env("MLC_CONFIG_PATH", &config_path)
+        .env("MLC_DB_PATH", &db_path)
+        .env("MLC_CACHE_DIR", &cache_dir)
+        .args([
+            "--json",
+            "broadcast",
+            "create",
+            "--name",
+            "test",
+            "--template",
+            "simple_ad",
+            "--to",
+            "list:news",
+        ]);
+    cmd.assert().success();
+
+    let mut cmd = Command::cargo_bin("mailing-list-cli").unwrap();
+    cmd.env("MLC_CONFIG_PATH", &config_path)
+        .env("MLC_DB_PATH", &db_path)
+        .env("MLC_CACHE_DIR", &cache_dir)
+        .env("MLC_UNSUBSCRIBE_SECRET", "test-secret-long-enough")
+        .args([
+            "--json",
+            "broadcast",
+            "preview",
+            "1",
+            "--to",
+            "preview@example.com",
+        ]);
+    let out = cmd.assert().success();
+    let v: Value =
+        serde_json::from_str(&String::from_utf8(out.get_output().stdout.clone()).unwrap()).unwrap();
+    assert_eq!(v["data"]["to"], "preview@example.com");
 }

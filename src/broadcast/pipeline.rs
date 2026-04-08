@@ -54,10 +54,7 @@ pub fn send_broadcast(id: i64) -> Result<PipelineResult, AppError> {
         message: format!("no broadcast with id {id}"),
         suggestion: "Run `mailing-list-cli broadcast ls` to see existing broadcasts".into(),
     })?;
-    if !matches!(
-        broadcast.status.as_str(),
-        "draft" | "scheduled" | "sending"
-    ) {
+    if !matches!(broadcast.status.as_str(), "draft" | "scheduled" | "sending") {
         return Err(AppError::BadInput {
             code: "broadcast_bad_status".into(),
             message: format!(
@@ -160,14 +157,15 @@ pub fn send_broadcast(id: i64) -> Result<PipelineResult, AppError> {
                 "current_year": chrono::Utc::now().format("%Y").to_string(),
                 "broadcast_id": id,
             });
-            let rendered = compile_with_placeholders(&template.mjml_source, &merge_data).map_err(
-                |e| AppError::BadInput {
-                    code: "template_compile_failed".into(),
-                    message: format!("template render failed: {e}"),
-                    suggestion: "Run `mailing-list-cli template lint <name>` to find issues"
-                        .into(),
-                },
-            )?;
+            let rendered =
+                compile_with_placeholders(&template.mjml_source, &merge_data).map_err(|e| {
+                    AppError::BadInput {
+                        code: "template_compile_failed".into(),
+                        message: format!("template render failed: {e}"),
+                        suggestion: "Run `mailing-list-cli template lint <name>` to find issues"
+                            .into(),
+                    }
+                })?;
             entries.push(BatchEntry {
                 from: sender_from.clone(),
                 to: vec![contact.email.clone()],
@@ -189,7 +187,9 @@ pub fn send_broadcast(id: i64) -> Result<PipelineResult, AppError> {
         match cli.batch_send(&batch_path) {
             Ok(results) => {
                 for (email, resend_id) in results {
-                    if let Some(contact) = chunk.iter().find(|c| c.email.eq_ignore_ascii_case(&email)) {
+                    if let Some(contact) =
+                        chunk.iter().find(|c| c.email.eq_ignore_ascii_case(&email))
+                    {
                         db.broadcast_recipient_mark_sent(id, contact.id, &resend_id)?;
                         sent_count += 1;
                     }
@@ -261,13 +261,14 @@ pub fn preview_broadcast(id: i64, to: &str) -> Result<PipelineResult, AppError> 
     let unsubscribe_secret = std::env::var(&config.unsubscribe.secret_env)
         .unwrap_or_else(|_| "mlc-unsubscribe-dev".to_string());
     let now_epoch = chrono::Utc::now().timestamp();
-    let preview_token = sign_token(unsubscribe_secret.as_bytes(), 0, id, now_epoch).map_err(|e| {
-        AppError::Transient {
-            code: "token_sign_failed".into(),
-            message: format!("HMAC sign failed: {e}"),
-            suggestion: "Set MLC_UNSUBSCRIBE_SECRET".into(),
-        }
-    })?;
+    let preview_token =
+        sign_token(unsubscribe_secret.as_bytes(), 0, id, now_epoch).map_err(|e| {
+            AppError::Transient {
+                code: "token_sign_failed".into(),
+                message: format!("HMAC sign failed: {e}"),
+                suggestion: "Set MLC_UNSUBSCRIBE_SECRET".into(),
+            }
+        })?;
     let unsubscribe_url = format!("{}/{}", config.unsubscribe.public_url, preview_token);
     let footer_html = format!(
         "<div style=\"color:#666;font-size:11px;text-align:center;margin-top:20px\">{}</div>",
@@ -282,14 +283,13 @@ pub fn preview_broadcast(id: i64, to: &str) -> Result<PipelineResult, AppError> 
         "current_year": chrono::Utc::now().format("%Y").to_string(),
         "broadcast_id": id,
     });
-    let rendered =
-        compile_with_placeholders(&template.mjml_source, &merge_data).map_err(|e| {
-            AppError::BadInput {
-                code: "template_compile_failed".into(),
-                message: format!("template render failed: {e}"),
-                suggestion: "Run `mailing-list-cli template lint <name>` to find issues".into(),
-            }
-        })?;
+    let rendered = compile_with_placeholders(&template.mjml_source, &merge_data).map_err(|e| {
+        AppError::BadInput {
+            code: "template_compile_failed".into(),
+            message: format!("template render failed: {e}"),
+            suggestion: "Run `mailing-list-cli template lint <name>` to find issues".into(),
+        }
+    })?;
     let subject = format!("[PREVIEW] {}", rendered.subject);
 
     let _resend_id = cli.send(&sender_from, to, &subject, &rendered.html, &rendered.text)?;
@@ -311,13 +311,13 @@ fn resolve_target(db: &Db, broadcast: &Broadcast) -> Result<Vec<Contact>, AppErr
             Ok(contacts)
         }
         "segment" => {
-            let segment = db
-                .segment_get_by_id(broadcast.target_id)?
-                .ok_or_else(|| AppError::BadInput {
-                    code: "segment_not_found".into(),
-                    message: format!("segment id {} not found", broadcast.target_id),
-                    suggestion: "Run `mailing-list-cli segment ls`".into(),
-                })?;
+            let segment =
+                db.segment_get_by_id(broadcast.target_id)?
+                    .ok_or_else(|| AppError::BadInput {
+                        code: "segment_not_found".into(),
+                        message: format!("segment id {} not found", broadcast.target_id),
+                        suggestion: "Run `mailing-list-cli segment ls`".into(),
+                    })?;
             let expr: SegmentExpr =
                 serde_json::from_str(&segment.filter_json).map_err(|e| AppError::Transient {
                     code: "segment_deserialize_failed".into(),
@@ -387,7 +387,9 @@ fn preflight_checks(
     if recipient_count > cap {
         return Err(AppError::BadInput {
             code: "recipient_count_exceeds_cap".into(),
-            message: format!("recipient count {recipient_count} exceeds max_recipients_per_send {cap}"),
+            message: format!(
+                "recipient count {recipient_count} exceeds max_recipients_per_send {cap}"
+            ),
             suggestion: "Raise the cap in config.toml [guards] or target a smaller segment".into(),
         });
     }

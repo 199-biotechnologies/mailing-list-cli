@@ -33,17 +33,14 @@ fn create(format: Format, args: BroadcastCreateArgs) -> Result<(), AppError> {
         })?;
 
     // Parse `list:<name>` or `segment:<name>`
-    let (kind, name) = args
-        .to
-        .split_once(':')
-        .ok_or_else(|| AppError::BadInput {
-            code: "bad_target_syntax".into(),
-            message: format!(
-                "--to '{}' must be `list:<name>` or `segment:<name>`",
-                args.to
-            ),
-            suggestion: "Example: --to list:newsletter or --to segment:vips".into(),
-        })?;
+    let (kind, name) = args.to.split_once(':').ok_or_else(|| AppError::BadInput {
+        code: "bad_target_syntax".into(),
+        message: format!(
+            "--to '{}' must be `list:<name>` or `segment:<name>`",
+            args.to
+        ),
+        suggestion: "Example: --to list:newsletter or --to segment:vips".into(),
+    })?;
 
     let (target_kind, target_id) = match kind {
         "list" => {
@@ -104,11 +101,13 @@ fn schedule(format: Format, args: BroadcastScheduleArgs) -> Result<(), AppError>
         message: format!("'{}' is not a valid RFC 3339 timestamp: {e}", args.at),
         suggestion: "Use e.g. 2026-04-09T12:00:00Z".into(),
     })?;
-    let b = db.broadcast_get(args.id)?.ok_or_else(|| AppError::BadInput {
-        code: "broadcast_not_found".into(),
-        message: format!("no broadcast with id {}", args.id),
-        suggestion: "Run `mailing-list-cli broadcast ls`".into(),
-    })?;
+    let b = db
+        .broadcast_get(args.id)?
+        .ok_or_else(|| AppError::BadInput {
+            code: "broadcast_not_found".into(),
+            message: format!("no broadcast with id {}", args.id),
+            suggestion: "Run `mailing-list-cli broadcast ls`".into(),
+        })?;
     if b.status != "draft" {
         return Err(AppError::BadInput {
             code: "broadcast_bad_status".into(),
@@ -155,11 +154,13 @@ fn cancel(format: Format, args: BroadcastCancelArgs) -> Result<(), AppError> {
         });
     }
     let db = Db::open()?;
-    let b = db.broadcast_get(args.id)?.ok_or_else(|| AppError::BadInput {
-        code: "broadcast_not_found".into(),
-        message: format!("no broadcast with id {}", args.id),
-        suggestion: "Run `mailing-list-cli broadcast ls`".into(),
-    })?;
+    let b = db
+        .broadcast_get(args.id)?
+        .ok_or_else(|| AppError::BadInput {
+            code: "broadcast_not_found".into(),
+            message: format!("no broadcast with id {}", args.id),
+            suggestion: "Run `mailing-list-cli broadcast ls`".into(),
+        })?;
     if !matches!(b.status.as_str(), "draft" | "scheduled") {
         return Err(AppError::BadInput {
             code: "broadcast_bad_status".into(),
@@ -193,11 +194,13 @@ fn list(format: Format, args: BroadcastListArgs) -> Result<(), AppError> {
 
 fn show(format: Format, args: BroadcastShowArgs) -> Result<(), AppError> {
     let db = Db::open()?;
-    let broadcast = db.broadcast_get(args.id)?.ok_or_else(|| AppError::BadInput {
-        code: "broadcast_not_found".into(),
-        message: format!("no broadcast with id {}", args.id),
-        suggestion: "Run `mailing-list-cli broadcast ls`".into(),
-    })?;
+    let broadcast = db
+        .broadcast_get(args.id)?
+        .ok_or_else(|| AppError::BadInput {
+            code: "broadcast_not_found".into(),
+            message: format!("no broadcast with id {}", args.id),
+            suggestion: "Run `mailing-list-cli broadcast ls`".into(),
+        })?;
     output::success(
         format,
         &format!("broadcast: {}", broadcast.name),
