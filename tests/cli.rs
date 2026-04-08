@@ -1135,6 +1135,79 @@ fn contact_ls_filter_on_date_field_queries_correct_column() {
 }
 
 #[test]
+fn contact_import_rolls_back_on_field_error() {
+    // Bug 2 regression: apply_row_local used to call contact_upsert and
+    // contact_add_to_list before validating custom-field values. When a
+    // later field coercion failed, the contact row and list membership
+    // had already been written, leaving half-imported state. After the
+    // fix, a row with an invalid field must leave NO trace (but valid
+    // rows imported alongside it must still land).
+    let (tmp, config_path, db_path) = stub_env();
+    let csv_path = tmp.path().join("mixed.csv");
+    std::fs::write(
+        &csv_path,
+        "email,consent_source,age\n\
+         alice@example.com,manual,30\n\
+         bob@example.com,manual,not-a-number\n",
+    )
+    .unwrap();
+
+    // list + number field
+    let mut cmd = Command::cargo_bin("mailing-list-cli").unwrap();
+    cmd.env("MLC_CONFIG_PATH", &config_path)
+        .env("MLC_DB_PATH", &db_path)
+        .args(["--json", "list", "create", "news"]);
+    cmd.assert().success();
+
+    let mut cmd = Command::cargo_bin("mailing-list-cli").unwrap();
+    cmd.env("MLC_CONFIG_PATH", &config_path)
+        .env("MLC_DB_PATH", &db_path)
+        .args(["--json", "field", "create", "age", "--type", "number"]);
+    cmd.assert().success();
+
+    // Import: alice should succeed, bob should fail on the `age` coercion.
+    let mut cmd = Command::cargo_bin("mailing-list-cli").unwrap();
+    cmd.env("MLC_CONFIG_PATH", &config_path)
+        .env("MLC_DB_PATH", &db_path)
+        .args([
+            "--json",
+            "contact",
+            "import",
+            csv_path.to_str().unwrap(),
+            "--list",
+            "1",
+        ]);
+    let out = cmd.assert().success();
+    let v: Value =
+        serde_json::from_str(&String::from_utf8(out.get_output().stdout.clone()).unwrap()).unwrap();
+    assert_eq!(v["data"]["inserted"], 1);
+    assert_eq!(v["data"]["skipped_invalid"], 1);
+
+    // Alice is present, bob is not (no half-written contact row).
+    let mut cmd = Command::cargo_bin("mailing-list-cli").unwrap();
+    cmd.env("MLC_CONFIG_PATH", &config_path)
+        .env("MLC_DB_PATH", &db_path)
+        .args(["--json", "contact", "ls", "--list", "1"]);
+    let out = cmd.assert().success();
+    let v: Value =
+        serde_json::from_str(&String::from_utf8(out.get_output().stdout.clone()).unwrap()).unwrap();
+    let emails: Vec<String> = v["data"]["contacts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["email"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(emails, vec!["alice@example.com".to_string()]);
+
+    // And contact show bob@example.com should fail: the row never existed.
+    let mut cmd = Command::cargo_bin("mailing-list-cli").unwrap();
+    cmd.env("MLC_CONFIG_PATH", &config_path)
+        .env("MLC_DB_PATH", &db_path)
+        .args(["--json", "contact", "show", "bob@example.com"]);
+    cmd.assert().failure().code(3);
+}
+
+#[test]
 fn contact_ls_filter_on_text_field_with_numeric_content() {
     // Bug 1 regression: a text field that contains numeric-looking content
     // like "00123" must be queried via `value_text`, not `value_number`.

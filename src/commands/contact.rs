@@ -8,7 +8,7 @@ use serde_json::json;
 
 pub fn run(format: Format, action: ContactAction) -> Result<(), AppError> {
     let config = Config::load()?;
-    let db = Db::open()?;
+    let mut db = Db::open()?;
     let cli = EmailCli::new(&config.email_cli.path, &config.email_cli.profile);
 
     match action {
@@ -18,13 +18,13 @@ pub fn run(format: Format, action: ContactAction) -> Result<(), AppError> {
         ContactAction::Untag(args) => untag_contact(format, &db, args),
         ContactAction::Set(args) => set_field(format, &db, args),
         ContactAction::Show(args) => show_contact(format, &db, args),
-        ContactAction::Import(args) => import(format, &db, &cli, args),
+        ContactAction::Import(args) => import(format, &mut db, &cli, args),
     }
 }
 
 fn import(
     format: Format,
-    db: &Db,
+    db: &mut Db,
     cli: &EmailCli,
     args: crate::cli::ContactImportArgs,
 ) -> Result<(), AppError> {
@@ -41,6 +41,8 @@ fn import(
         });
     }
 
+    // Clone the list details up-front so `db` is free to be borrowed
+    // mutably inside the per-row apply loop.
     let list = db
         .list_get_by_id(args.list)?
         .ok_or_else(|| AppError::BadInput {
@@ -48,6 +50,10 @@ fn import(
             message: format!("no list with id {}", args.list),
             suggestion: "Run `mailing-list-cli list ls`".into(),
         })?;
+    let list_id = list.id;
+    let list_name = list.name.clone();
+    let list_resend_segment_id = list.resend_segment_id.clone();
+    drop(list);
 
     // Read + validate all rows before touching the DB so a malformed file
     // never leaves a half-imported state.
@@ -63,10 +69,11 @@ fn import(
         total_rows: total,
         ..Default::default()
     };
+    let _ = list_name;
 
     for (idx, row) in rows.iter().enumerate() {
         // Local write first
-        match crate::csv_import::apply_row_local(db, list.id, row, args.unsafe_no_consent) {
+        match crate::csv_import::apply_row_local(db, list_id, row, args.unsafe_no_consent) {
             Ok(()) => {
                 summary.inserted += 1;
                 if args.unsafe_no_consent {
@@ -92,7 +99,7 @@ fn import(
             &row.email,
             row.first_name.as_deref(),
             row.last_name.as_deref(),
-            &[list.resend_segment_id.as_str()],
+            &[list_resend_segment_id.as_str()],
             None,
         ) {
             summary

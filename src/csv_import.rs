@@ -165,8 +165,15 @@ pub fn read_rows<R: Read>(reader: R, unsafe_no_consent: bool) -> Result<Vec<Impo
 /// Apply validated rows to the database. Idempotent — safe to rerun.
 /// Does NOT call `email-cli`; that layer is handled by the command module so
 /// it can enforce rate limits and progress reporting.
+///
+/// Atomic: the row is first fully pre-validated (suppression check, every
+/// custom-field resolved + coerced) BEFORE any write happens. The writes
+/// themselves are then wrapped in a SAVEPOINT so that an unexpected failure
+/// in the middle of tag/field upserts rolls back the contact and membership
+/// rows too. This matches the idempotent-replay contract — a row that is
+/// counted as `skipped_invalid` must leave NO DB state behind.
 pub fn apply_row_local(
-    db: &Db,
+    db: &mut Db,
     list_id: i64,
     row: &ImportRow,
     unsafe_no_consent: bool,
@@ -180,25 +187,9 @@ pub fn apply_row_local(
         });
     }
 
-    let contact_id = db.contact_upsert(
-        &row.email,
-        row.first_name.as_deref(),
-        row.last_name.as_deref(),
-    )?;
-    db.contact_add_to_list(contact_id, list_id)?;
-
-    // Tags
-    let mut resolved_tags: Vec<String> = row.tags.clone();
-    if unsafe_no_consent {
-        resolved_tags.push("imported_without_consent".to_string());
-    }
-    for tag in &resolved_tags {
-        let tag_id = db.tag_get_or_create(tag)?;
-        db.contact_tag_add(contact_id, tag_id)?;
-    }
-
-    // Fields (type-coerced; unknown keys are a hard error so the operator
-    // notices bad CSV columns early)
+    // Pre-validate every custom field BEFORE any DB writes. If any field
+    // lookup or coercion fails, we abort with zero side effects.
+    let mut pending_fields: Vec<(crate::models::Field, crate::db::TypedFieldValue)> = Vec::new();
     for (k, v) in &row.fields {
         let field = db.field_get(k)?.ok_or_else(|| AppError::BadInput {
             code: "field_not_found".into(),
@@ -208,9 +199,124 @@ pub fn apply_row_local(
             suggestion: "Either remove the column or run `field create` first".into(),
         })?;
         let typed = db.coerce_field_value(&field, v)?;
-        db.contact_field_upsert(contact_id, field.id, &typed)?;
+        pending_fields.push((field, typed));
     }
+
+    // All the writes run inside a transaction so any unexpected error
+    // between the contact upsert and the last field write rolls the whole
+    // row back. Pre-validation means we don't expect to ever roll back due
+    // to field issues, but rusqlite errors (disk full, locked db, etc.) can
+    // still strike mid-write.
+    let tx = db.conn.transaction().map_err(|e| AppError::Transient {
+        code: "tx_begin_failed".into(),
+        message: format!("could not begin transaction: {e}"),
+        suggestion: "Retry; if the problem persists run `mailing-list-cli health`".into(),
+    })?;
+
+    let contact_id = apply_row_inside_tx(&tx, list_id, row, unsafe_no_consent, &pending_fields)?;
+    let _ = contact_id;
+
+    tx.commit().map_err(|e| AppError::Transient {
+        code: "tx_commit_failed".into(),
+        message: format!("could not commit import transaction: {e}"),
+        suggestion: "Retry the import; the row was not written".into(),
+    })?;
     Ok(())
+}
+
+/// The actual DB writes — runs inside an open transaction. Any error rolls
+/// the transaction back via `Drop`.
+fn apply_row_inside_tx(
+    tx: &rusqlite::Transaction<'_>,
+    list_id: i64,
+    row: &ImportRow,
+    unsafe_no_consent: bool,
+    pending_fields: &[(crate::models::Field, crate::db::TypedFieldValue)],
+) -> Result<i64, AppError> {
+    let now = chrono::Utc::now().to_rfc3339();
+
+    // Contact upsert
+    let res = tx.execute(
+        "INSERT INTO contact (email, first_name, last_name, status, created_at, updated_at)
+         VALUES (?1, ?2, ?3, 'active', ?4, ?4)",
+        rusqlite::params![row.email, row.first_name, row.last_name, now],
+    );
+    let contact_id = match res {
+        Ok(_) => tx.last_insert_rowid(),
+        Err(e) if e.to_string().contains("UNIQUE constraint failed") => tx
+            .query_row(
+                "SELECT id FROM contact WHERE email = ?1",
+                rusqlite::params![row.email],
+                |r| r.get::<_, i64>(0),
+            )
+            .map_err(tx_query_err)?,
+        Err(e) => return Err(tx_query_err(e)),
+    };
+
+    // List membership
+    tx.execute(
+        "INSERT OR IGNORE INTO list_membership (list_id, contact_id, joined_at)
+         VALUES (?1, ?2, ?3)",
+        rusqlite::params![list_id, contact_id, now],
+    )
+    .map_err(tx_query_err)?;
+
+    // Tags
+    let mut resolved_tags: Vec<String> = row.tags.clone();
+    if unsafe_no_consent {
+        resolved_tags.push("imported_without_consent".to_string());
+    }
+    for tag in &resolved_tags {
+        // Get or create the tag
+        let tag_id: i64 = match tx.query_row(
+            "SELECT id FROM tag WHERE name = ?1",
+            rusqlite::params![tag],
+            |r| r.get(0),
+        ) {
+            Ok(id) => id,
+            Err(rusqlite::Error::QueryReturnedNoRows) => {
+                tx.execute("INSERT INTO tag (name) VALUES (?1)", rusqlite::params![tag])
+                    .map_err(tx_query_err)?;
+                tx.last_insert_rowid()
+            }
+            Err(e) => return Err(tx_query_err(e)),
+        };
+        tx.execute(
+            "INSERT OR IGNORE INTO contact_tag (contact_id, tag_id, applied_at)
+             VALUES (?1, ?2, ?3)",
+            rusqlite::params![contact_id, tag_id, now],
+        )
+        .map_err(tx_query_err)?;
+    }
+
+    // Fields (already coerced during pre-validation)
+    for (field, typed) in pending_fields {
+        let (text, num, date, b) = match typed {
+            crate::db::TypedFieldValue::Text(s) => (Some(s.clone()), None, None, None),
+            crate::db::TypedFieldValue::Number(n) => (None, Some(*n), None, None),
+            crate::db::TypedFieldValue::Date(d) => (None, None, Some(d.clone()), None),
+            crate::db::TypedFieldValue::Bool(b) => {
+                (None, None, None, Some(if *b { 1i64 } else { 0 }))
+            }
+        };
+        tx.execute(
+            "INSERT OR REPLACE INTO contact_field_value
+             (contact_id, field_id, value_text, value_number, value_date, value_bool)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params![contact_id, field.id, text, num, date, b],
+        )
+        .map_err(tx_query_err)?;
+    }
+
+    Ok(contact_id)
+}
+
+fn tx_query_err(e: rusqlite::Error) -> AppError {
+    AppError::Transient {
+        code: "db_query_failed".into(),
+        message: format!("database query failed: {e}"),
+        suggestion: "Run `mailing-list-cli health` to inspect the database state".into(),
+    }
 }
 
 fn is_suppressed(db: &Db, email: &str) -> Result<bool, AppError> {
@@ -285,7 +391,7 @@ bob@example.com,Bob,,,manual,Globex
     #[test]
     fn apply_row_is_idempotent() {
         let tmp = tempfile::NamedTempFile::new().unwrap();
-        let db = Db::open_at(tmp.path()).unwrap();
+        let mut db = Db::open_at(tmp.path()).unwrap();
         let list_id = db.list_create("news", None, "seg_x").unwrap();
         let row = ImportRow {
             email: "alice@example.com".into(),
@@ -295,9 +401,9 @@ bob@example.com,Bob,,,manual,Globex
             tags: vec!["vip".into()],
             fields: vec![],
         };
-        apply_row_local(&db, list_id, &row, false).unwrap();
-        apply_row_local(&db, list_id, &row, false).unwrap();
-        apply_row_local(&db, list_id, &row, false).unwrap();
+        apply_row_local(&mut db, list_id, &row, false).unwrap();
+        apply_row_local(&mut db, list_id, &row, false).unwrap();
+        apply_row_local(&mut db, list_id, &row, false).unwrap();
         // Exactly one contact, one tag linkage
         let contacts = db.contact_list_in_list(list_id, 100).unwrap();
         assert_eq!(contacts.len(), 1);
@@ -308,7 +414,7 @@ bob@example.com,Bob,,,manual,Globex
     #[test]
     fn apply_row_refuses_suppressed_email() {
         let tmp = tempfile::NamedTempFile::new().unwrap();
-        let db = Db::open_at(tmp.path()).unwrap();
+        let mut db = Db::open_at(tmp.path()).unwrap();
         let list_id = db.list_create("news", None, "seg_x").unwrap();
         db.conn
             .execute(
@@ -324,13 +430,13 @@ bob@example.com,Bob,,,manual,Globex
             tags: vec![],
             fields: vec![],
         };
-        assert!(apply_row_local(&db, list_id, &row, false).is_err());
+        assert!(apply_row_local(&mut db, list_id, &row, false).is_err());
     }
 
     #[test]
     fn apply_row_auto_tags_unsafe_consent() {
         let tmp = tempfile::NamedTempFile::new().unwrap();
-        let db = Db::open_at(tmp.path()).unwrap();
+        let mut db = Db::open_at(tmp.path()).unwrap();
         let list_id = db.list_create("news", None, "seg_x").unwrap();
         let row = ImportRow {
             email: "alice@example.com".into(),
@@ -340,7 +446,7 @@ bob@example.com,Bob,,,manual,Globex
             tags: vec![],
             fields: vec![],
         };
-        apply_row_local(&db, list_id, &row, true).unwrap();
+        apply_row_local(&mut db, list_id, &row, true).unwrap();
         let contact = db
             .contact_get_by_email("alice@example.com")
             .unwrap()
@@ -350,5 +456,33 @@ bob@example.com,Bob,,,manual,Globex
                 .unwrap()
                 .contains(&"imported_without_consent".to_string())
         );
+    }
+
+    #[test]
+    fn apply_row_pre_validates_fields_before_any_write() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let mut db = Db::open_at(tmp.path()).unwrap();
+        let list_id = db.list_create("news", None, "seg_x").unwrap();
+        db.field_create("age", "number", None).unwrap();
+        let row = ImportRow {
+            email: "ghost@example.com".into(),
+            first_name: None,
+            last_name: None,
+            consent_source: Some("manual".into()),
+            tags: vec!["should-not-exist".into()],
+            fields: vec![("age".into(), "not-a-number".into())],
+        };
+        assert!(apply_row_local(&mut db, list_id, &row, false).is_err());
+        // No contact, no membership, no tag row must have been written.
+        assert!(
+            db.contact_get_by_email("ghost@example.com")
+                .unwrap()
+                .is_none()
+        );
+        let count: i64 = db
+            .conn
+            .query_row("SELECT COUNT(*) FROM tag", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 0, "pre-validated failure must not create tag rows");
     }
 }
