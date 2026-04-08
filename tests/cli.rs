@@ -62,7 +62,7 @@ fn agent_info_lists_phase_3_commands() {
             "agent-info missing command: {key}"
         );
     }
-    assert!(v["status"].as_str().unwrap().starts_with("v0.0.5"));
+    assert!(v["status"].as_str().unwrap().starts_with("v0.1.0"));
 }
 
 #[test]
@@ -1590,4 +1590,22 @@ fn template_guidelines_prints_authoring_guide() {
     let guide = v["data"]["guide_markdown"].as_str().unwrap();
     assert!(guide.contains("Template Authoring for mailing-list-cli"));
     assert!(guide.contains("{{{ unsubscribe_link }}}"));
+}
+
+#[test]
+fn agent_info_lists_phase_4_commands() {
+    let mut cmd = Command::cargo_bin("mailing-list-cli").unwrap();
+    let out = cmd.args(["--json", "agent-info"]).assert().success();
+    let v: Value =
+        serde_json::from_str(&String::from_utf8(out.get_output().stdout.clone()).unwrap()).unwrap();
+    let commands = v["commands"].as_object().unwrap();
+    for key in [
+        "template create <name> [--from-file <path>]",
+        "template render <name> [--with-data <file.json>] [--with-placeholders]",
+        "template lint <name>",
+        "template guidelines",
+    ] {
+        assert!(commands.contains_key(key), "agent-info missing {key}");
+    }
+    assert!(v["status"].as_str().unwrap().starts_with("v0.1.0"));
 }

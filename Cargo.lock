@@ -927,7 +927,7 @@ dependencies = [
 
 [[package]]
 name = "mailing-list-cli"
-version = "0.0.5"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "assert_cmd",

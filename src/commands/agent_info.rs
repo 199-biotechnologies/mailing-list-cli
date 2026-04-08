@@ -29,6 +29,14 @@ pub fn run() {
             "segment show <name>": "Show a segment's filter + 10 sample members",
             "segment members <name> [--limit N] [--cursor C]": "List contacts currently matching the segment",
             "segment rm <name> --confirm": "Delete a segment definition",
+            "template create <name> [--from-file <path>]": "Create a new template (scaffold or import MJML file)",
+            "template ls": "List all templates",
+            "template show <name>": "Print a template's MJML source",
+            "template render <name> [--with-data <file.json>] [--with-placeholders]": "Compile template → JSON { subject, html, text }",
+            "template lint <name>": "Run the 13-rule lint set; exit 3 on errors",
+            "template edit <name> [--force]": "Open in $EDITOR, re-lint on save",
+            "template rm <name> --confirm": "Delete a template",
+            "template guidelines": "Print the embedded agent authoring guide",
             "update [--check]": "Self-update from GitHub Releases",
             "skill install": "Install skill files into Claude / Codex / Gemini paths",
             "skill status": "Show which platforms have the skill installed"
@@ -53,7 +61,7 @@ pub fn run() {
         "auto_json_when_piped": true,
         "env_prefix": "MLC_",
         "depends_on": ["email-cli >= 0.6.0"],
-        "status": "v0.0.5 — hotfix critical phase 3 bugs"
+        "status": "v0.1.0 — templates, MJML compile pipeline, lint, agent authoring guide"
     });
     println!("{}", serde_json::to_string_pretty(&manifest).unwrap());
 }
