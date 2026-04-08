@@ -126,8 +126,8 @@ Each phase produces a shippable release tag. Order is deliberate: later phases d
 **Goal:** everything needed to define WHO a campaign is going to, before we can actually send a campaign.
 
 **Ships:**
-- `contact show <email>`, `contact erase <email>`, `contact resubscribe <email>`
-- `contact import <file.csv> --list <id> [--double-opt-in]` with rate-limit-aware chunking
+- `contact show <email>` (contact erase and contact resubscribe deferred to Phase 7 — they depend on suppression CRUD and the audit log that Phase 7 owns)
+- `contact import <file.csv> --list <id> [--unsafe-no-consent]` with rate-limit-aware chunking at the subprocess layer and idempotent replay (--double-opt-in is visible but rejected with exit 3 until Phase 7)
 - `contact tag <email> <tag>` / `contact untag <email> <tag>`
 - `contact set <email> <field> <value>` (writes local `contact_field_value`; passes through `--properties` to `email-cli contact update` if a field is marked `sync-to-resend`)
 - `tag ls`, `tag rm`
