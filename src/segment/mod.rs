@@ -16,5 +16,5 @@ pub mod compiler;
 pub mod parser;
 
 pub use ast::{Atom, EngagementAtom, FieldOp, ListPredicate, SegmentExpr, TagPredicate};
-pub use compiler::to_sql_where;
+pub use compiler::{collect_field_keys, to_sql_where, to_sql_where_with_field_types};
 pub use parser::{ParseError, parse};

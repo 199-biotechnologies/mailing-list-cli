@@ -58,7 +58,8 @@ fn list(format: Format, db: &Db) -> Result<(), AppError> {
                 message: format!("corrupted segment '{}': {e}", s.name),
                 suggestion: "Recreate the segment with `segment rm` + `segment create`".into(),
             })?;
-        let (frag, params) = compiler::to_sql_where(&expr);
+        let field_types = resolve_field_types(db, &expr)?;
+        let (frag, params) = compiler::to_sql_where_with_field_types(&expr, &field_types);
         let count = db.segment_count_members(&frag, &params)?;
         enriched.push(json!({
             "id": s.id,
@@ -90,7 +91,8 @@ fn show(format: Format, db: &Db, args: SegmentShowArgs) -> Result<(), AppError> 
             message: format!("corrupted segment: {e}"),
             suggestion: "Recreate the segment".into(),
         })?;
-    let (frag, params) = compiler::to_sql_where(&expr);
+    let field_types = resolve_field_types(db, &expr)?;
+    let (frag, params) = compiler::to_sql_where_with_field_types(&expr, &field_types);
     let member_count = db.segment_count_members(&frag, &params)?;
     let sample = db.segment_members(&frag, &params, 10, None)?;
     output::success(
@@ -123,7 +125,8 @@ fn members(format: Format, db: &Db, args: SegmentMembersArgs) -> Result<(), AppE
             message: format!("corrupted segment: {e}"),
             suggestion: "Recreate the segment".into(),
         })?;
-    let (frag, params) = compiler::to_sql_where(&expr);
+    let field_types = resolve_field_types(db, &expr)?;
+    let (frag, params) = compiler::to_sql_where_with_field_types(&expr, &field_types);
     let contacts = db.segment_members(&frag, &params, args.limit, args.cursor)?;
     let next_cursor = contacts.last().map(|c| c.id);
     let count = contacts.len();
@@ -138,6 +141,22 @@ fn members(format: Format, db: &Db, args: SegmentMembersArgs) -> Result<(), AppE
         }),
     );
     Ok(())
+}
+
+/// Pre-resolve the declared type of every custom field referenced in a
+/// parsed filter expression so the compiler can pick the right storage
+/// column.
+fn resolve_field_types(
+    db: &Db,
+    expr: &crate::segment::SegmentExpr,
+) -> Result<std::collections::HashMap<String, String>, AppError> {
+    let mut map = std::collections::HashMap::new();
+    for key in crate::segment::collect_field_keys(expr) {
+        if let Some(ty) = db.field_get_type(&key)? {
+            map.insert(key, ty);
+        }
+    }
+    Ok(map)
 }
 
 fn remove(format: Format, db: &Db, args: SegmentRmArgs) -> Result<(), AppError> {

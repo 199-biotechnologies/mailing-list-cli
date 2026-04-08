@@ -457,6 +457,21 @@ impl Db {
         rows.collect::<Result<Vec<_>, _>>().map_err(query_err)
     }
 
+    /// Return the declared type of a field (`"text" | "number" | "date" | "bool" | "select"`)
+    /// for a given key. Used by the segment compiler to pick the correct
+    /// storage column when compiling custom-field predicates.
+    pub fn field_get_type(&self, key: &str) -> Result<Option<String>, AppError> {
+        match self
+            .conn
+            .query_row("SELECT type FROM field WHERE key = ?1", params![key], |r| {
+                r.get::<_, String>(0)
+            }) {
+            Ok(ty) => Ok(Some(ty)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(query_err(e)),
+        }
+    }
+
     pub fn field_get(&self, key: &str) -> Result<Option<crate::models::Field>, AppError> {
         let mut stmt = self
             .conn

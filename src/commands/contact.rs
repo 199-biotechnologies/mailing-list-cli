@@ -278,7 +278,9 @@ fn list_contacts(format: Format, db: &Db, args: ContactListArgs) -> Result<(), A
             message: e.message.clone(),
             suggestion: e.suggestion.clone(),
         })?;
-        let (frag, filter_params) = crate::segment::compiler::to_sql_where(&parsed);
+        let field_types = resolve_field_types(db, &parsed)?;
+        let (frag, filter_params) =
+            crate::segment::compiler::to_sql_where_with_field_types(&parsed, &field_types);
         clauses.push(format!("({frag})"));
         params.extend(filter_params);
     }
@@ -319,6 +321,23 @@ fn list_contacts(format: Format, db: &Db, args: ContactListArgs) -> Result<(), A
         }),
     );
     Ok(())
+}
+
+/// Pre-resolve the declared type of every custom field referenced in a
+/// parsed filter expression. The resulting map lets the segment compiler
+/// pick the right `contact_field_value` column (text/number/date/bool)
+/// instead of sniffing the string literal.
+fn resolve_field_types(
+    db: &Db,
+    expr: &crate::segment::SegmentExpr,
+) -> Result<std::collections::HashMap<String, String>, AppError> {
+    let mut map = std::collections::HashMap::new();
+    for key in crate::segment::collect_field_keys(expr) {
+        if let Some(ty) = db.field_get_type(&key)? {
+            map.insert(key, ty);
+        }
+    }
+    Ok(map)
 }
 
 /// Minimal email validity check: contains exactly one '@', non-empty parts, no whitespace.

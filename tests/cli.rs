@@ -1063,3 +1063,119 @@ fn contact_add_duplicate_triggers_segment_contact_add() {
         serde_json::from_str(&String::from_utf8(out.get_output().stdout.clone()).unwrap()).unwrap();
     assert_eq!(v["data"]["count"], 1);
 }
+
+#[test]
+fn contact_ls_filter_on_date_field_queries_correct_column() {
+    // Bug 1 regression: date fields must be queried via `value_date`, not
+    // `value_text` (the previous behavior) or `value_number`. Prior to the
+    // fix, `event_date:>:2026-01-01` silently returned zero rows because the
+    // compiler picked `value_text` for the inequality.
+    let (_tmp, config_path, db_path) = stub_env();
+
+    // Seed: list + contact + date field + date value
+    for args in [
+        vec!["--json", "list", "create", "news"],
+        vec!["--json", "field", "create", "event_date", "--type", "date"],
+        vec![
+            "--json",
+            "contact",
+            "add",
+            "alice@example.com",
+            "--list",
+            "1",
+        ],
+        vec![
+            "--json",
+            "contact",
+            "set",
+            "alice@example.com",
+            "event_date",
+            "2026-03-15T00:00:00Z",
+        ],
+    ] {
+        let mut cmd = Command::cargo_bin("mailing-list-cli").unwrap();
+        cmd.env("MLC_CONFIG_PATH", &config_path)
+            .env("MLC_DB_PATH", &db_path)
+            .args(&args);
+        cmd.assert().success();
+    }
+
+    // Filter with a date comparison should find alice
+    let mut cmd = Command::cargo_bin("mailing-list-cli").unwrap();
+    cmd.env("MLC_CONFIG_PATH", &config_path)
+        .env("MLC_DB_PATH", &db_path)
+        .args([
+            "--json",
+            "contact",
+            "ls",
+            "--filter",
+            "event_date:>:2026-01-01",
+        ]);
+    let out = cmd.assert().success();
+    let v: Value =
+        serde_json::from_str(&String::from_utf8(out.get_output().stdout.clone()).unwrap()).unwrap();
+    assert_eq!(v["data"]["count"], 1, "expected date filter to match alice");
+    assert_eq!(v["data"]["contacts"][0]["email"], "alice@example.com");
+
+    // And a comparison that excludes alice
+    let mut cmd = Command::cargo_bin("mailing-list-cli").unwrap();
+    cmd.env("MLC_CONFIG_PATH", &config_path)
+        .env("MLC_DB_PATH", &db_path)
+        .args([
+            "--json",
+            "contact",
+            "ls",
+            "--filter",
+            "event_date:>:2030-01-01",
+        ]);
+    let out = cmd.assert().success();
+    let v: Value =
+        serde_json::from_str(&String::from_utf8(out.get_output().stdout.clone()).unwrap()).unwrap();
+    assert_eq!(v["data"]["count"], 0);
+}
+
+#[test]
+fn contact_ls_filter_on_text_field_with_numeric_content() {
+    // Bug 1 regression: a text field that contains numeric-looking content
+    // like "00123" must be queried via `value_text`, not `value_number`.
+    let (_tmp, config_path, db_path) = stub_env();
+
+    for args in [
+        vec!["--json", "list", "create", "news"],
+        vec!["--json", "field", "create", "zip_code", "--type", "text"],
+        vec![
+            "--json",
+            "contact",
+            "add",
+            "alice@example.com",
+            "--list",
+            "1",
+        ],
+        vec![
+            "--json",
+            "contact",
+            "set",
+            "alice@example.com",
+            "zip_code",
+            "00123",
+        ],
+    ] {
+        let mut cmd = Command::cargo_bin("mailing-list-cli").unwrap();
+        cmd.env("MLC_CONFIG_PATH", &config_path)
+            .env("MLC_DB_PATH", &db_path)
+            .args(&args);
+        cmd.assert().success();
+    }
+
+    // Equality on the zero-padded zip must match; the old path queried
+    // value_number which holds NULL for text fields.
+    let mut cmd = Command::cargo_bin("mailing-list-cli").unwrap();
+    cmd.env("MLC_CONFIG_PATH", &config_path)
+        .env("MLC_DB_PATH", &db_path)
+        .args(["--json", "contact", "ls", "--filter", "zip_code:=:00123"]);
+    let out = cmd.assert().success();
+    let v: Value =
+        serde_json::from_str(&String::from_utf8(out.get_output().stdout.clone()).unwrap()).unwrap();
+    assert_eq!(v["data"]["count"], 1);
+    assert_eq!(v["data"]["contacts"][0]["email"], "alice@example.com");
+}

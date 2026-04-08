@@ -10,20 +10,73 @@ use crate::segment::ast::{
     Atom, EngagementAtom, FieldOp, ListPredicate, SegmentExpr, TagPredicate,
 };
 use rusqlite::types::Value as SqlValue;
+use std::collections::HashMap;
 
 /// Compile the expression. Returns `(fragment, params)`.
+///
+/// Custom-field atoms fall back to legacy string-literal-sniffing coercion
+/// (the pre-v0.0.5 behavior). Callers that have access to the `field` table
+/// should prefer [`to_sql_where_with_field_types`] so that the compiler can
+/// pick the correct storage column (`value_text` / `value_number` /
+/// `value_date` / `value_bool`) from the field's declared type.
 pub fn to_sql_where(expr: &SegmentExpr) -> (String, Vec<SqlValue>) {
-    let mut ctx = Ctx::default();
+    to_sql_where_with_field_types(expr, &HashMap::new())
+}
+
+/// Compile the expression with a pre-resolved map of custom-field types
+/// (`key -> "text" | "number" | "date" | "bool" | "select"`). Unknown keys
+/// fall back to the legacy behavior of [`to_sql_where`].
+pub fn to_sql_where_with_field_types(
+    expr: &SegmentExpr,
+    field_types: &HashMap<String, String>,
+) -> (String, Vec<SqlValue>) {
+    let mut ctx = Ctx {
+        params: Vec::new(),
+        field_types,
+    };
     let sql = compile(expr, &mut ctx);
     (sql, ctx.params)
 }
 
-#[derive(Default)]
-struct Ctx {
-    params: Vec<SqlValue>,
+/// Walk the expression and return every custom (non-builtin) field key that
+/// appears in a `Field` atom. Used by callers to pre-resolve the
+/// `key -> type` map before calling [`to_sql_where_with_field_types`].
+pub fn collect_field_keys(expr: &SegmentExpr) -> Vec<String> {
+    let mut keys = Vec::new();
+    walk_keys(expr, &mut keys);
+    keys.sort();
+    keys.dedup();
+    keys
 }
 
-impl Ctx {
+fn walk_keys(expr: &SegmentExpr, out: &mut Vec<String>) {
+    match expr {
+        SegmentExpr::Or { children } | SegmentExpr::And { children } => {
+            for c in children {
+                walk_keys(c, out);
+            }
+        }
+        SegmentExpr::Not { child } => walk_keys(child, out),
+        SegmentExpr::Atom { atom } => {
+            if let Atom::Field { key, .. } = atom
+                && !is_builtin_key(key)
+            {
+                out.push(key.clone());
+            }
+        }
+    }
+}
+
+fn is_builtin_key(key: &str) -> bool {
+    matches!(key, "email" | "first_name" | "last_name")
+}
+
+struct Ctx<'a> {
+    params: Vec<SqlValue>,
+    field_types: &'a HashMap<String, String>,
+}
+
+impl<'a> Ctx<'a> {
     fn push(&mut self, v: SqlValue) -> &'static str {
         self.params.push(v);
         "?"
@@ -88,11 +141,19 @@ fn compile_field(key: &str, op: FieldOp, value: &str, ctx: &mut Ctx) -> String {
     }
 
     // Tier 2: custom field lookup via contact_field_value.
-    // Value coercion: if the value parses as a number we bind as Real; if it
-    // parses as "true"/"false" we bind as Integer 1/0; otherwise as Text.
-    // The column chosen in the subquery mirrors the choice.
+    //
+    // If the caller pre-resolved this key's declared type (via the
+    // `field_types` map threaded through Ctx), we pick the storage column
+    // (`value_text` / `value_number` / `value_date` / `value_bool`) and coerce
+    // the literal to match. Otherwise we fall back to the legacy behavior of
+    // sniffing the string literal — which is wrong for date fields and for
+    // text fields with numeric-looking content, but is preserved so existing
+    // tests and CLI callers that did not thread `field_types` keep working.
     let key_param = ctx.push(SqlValue::Text(key.to_string()));
-    let (col, sql_val) = coerce_value(value);
+    let (col, sql_val) = match ctx.field_types.get(key) {
+        Some(ty) => coerce_value_by_type(ty.as_str(), value),
+        None => coerce_value(value),
+    };
     let value_param = ctx.push(sql_val);
     let op_sql = op_to_sql(op);
     let like_wrap = matches!(op, FieldOp::Like | FieldOp::NotLike);
@@ -132,7 +193,8 @@ fn op_to_sql(op: FieldOp) -> &'static str {
     }
 }
 
-/// Pick the best column in `contact_field_value` for the given literal.
+/// Legacy column/value picker that sniffs the string literal. Used only when
+/// the caller did not thread a `field_types` map. See [`to_sql_where`].
 fn coerce_value(value: &str) -> (&'static str, SqlValue) {
     if let Ok(n) = value.parse::<f64>() {
         return ("value_number", SqlValue::Real(n));
@@ -143,6 +205,40 @@ fn coerce_value(value: &str) -> (&'static str, SqlValue) {
         _ => {}
     }
     ("value_text", SqlValue::Text(value.to_string()))
+}
+
+/// Pick the storage column + coerced value from the field's declared type.
+/// Unknown types fall back to the legacy literal-sniffing behavior so that
+/// callers are never left without a usable predicate.
+fn coerce_value_by_type(ty: &str, value: &str) -> (&'static str, SqlValue) {
+    match ty {
+        "text" | "select" => ("value_text", SqlValue::Text(value.to_string())),
+        "number" => {
+            if let Ok(n) = value.parse::<f64>() {
+                ("value_number", SqlValue::Real(n))
+            } else {
+                // Non-numeric literal against a number column — still bind
+                // textually so the query produces zero rows rather than a
+                // type mismatch at rusqlite level.
+                ("value_number", SqlValue::Text(value.to_string()))
+            }
+        }
+        "bool" => {
+            let truthy = matches!(value.to_ascii_lowercase().as_str(), "true" | "yes" | "1");
+            let falsy = matches!(value.to_ascii_lowercase().as_str(), "false" | "no" | "0");
+            if truthy {
+                ("value_bool", SqlValue::Integer(1))
+            } else if falsy {
+                ("value_bool", SqlValue::Integer(0))
+            } else {
+                // Pass through as text; produces no rows, which is the
+                // right behavior for a nonsense literal.
+                ("value_bool", SqlValue::Text(value.to_string()))
+            }
+        }
+        "date" => ("value_date", SqlValue::Text(value.to_string())),
+        _ => coerce_value(value),
+    }
 }
 
 fn compile_tag(pred: &TagPredicate, ctx: &mut Ctx) -> String {
