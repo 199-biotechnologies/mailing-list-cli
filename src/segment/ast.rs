@@ -120,9 +120,7 @@ mod tests {
             children: vec![
                 SegmentExpr::Atom {
                     atom: Atom::Tag {
-                        pred: TagPredicate::Has {
-                            name: "vip".into(),
-                        },
+                        pred: TagPredicate::Has { name: "vip".into() },
                     },
                 },
                 SegmentExpr::Not {

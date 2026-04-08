@@ -1,8 +1,7 @@
 //! Filter expression parser. Built on pest.
 
 use crate::segment::ast::{
-    Atom, Duration, DurationUnit, EngagementAtom, FieldOp, ListPredicate, SegmentExpr,
-    TagPredicate,
+    Atom, Duration, DurationUnit, EngagementAtom, FieldOp, ListPredicate, SegmentExpr, TagPredicate,
 };
 use pest::Parser;
 use pest::iterators::{Pair, Pairs};
@@ -171,7 +170,9 @@ fn build_term(pair: Pair<Rule>) -> Result<SegmentExpr, ParseError> {
                 pred: build_list(pair)?,
             },
         }),
-        Rule::bounced_atom => Ok(SegmentExpr::Atom { atom: Atom::Bounced }),
+        Rule::bounced_atom => Ok(SegmentExpr::Atom {
+            atom: Atom::Bounced,
+        }),
         Rule::keyed_atom => build_keyed(pair),
         other => Err(ParseError::new(
             format!("unexpected term rule: {other:?}"),
@@ -214,7 +215,9 @@ fn pair_last_duration(pair: Pair<Rule>) -> Result<Duration, ParseError> {
     let duration_pair = pair
         .into_inner()
         .find(|p| p.as_rule() == Rule::duration)
-        .ok_or_else(|| ParseError::new("missing duration", "expected e.g. `30d`, `6h`, `2w`, `3m`"))?;
+        .ok_or_else(|| {
+            ParseError::new("missing duration", "expected e.g. `30d`, `6h`, `2w`, `3m`")
+        })?;
     parse_duration(duration_pair.as_str())
 }
 
@@ -431,10 +434,7 @@ mod tests {
         match e {
             SegmentExpr::And { children } => {
                 assert_eq!(children.len(), 2);
-                assert!(matches!(
-                    &children[1],
-                    SegmentExpr::Not { .. }
-                ));
+                assert!(matches!(&children[1], SegmentExpr::Not { .. }));
             }
             other => panic!("expected And, got {other:?}"),
         }

@@ -313,10 +313,7 @@ mod tests {
             .unwrap();
         db.contact_add_to_list(alice, list_id).unwrap();
         db.conn
-            .execute(
-                "INSERT INTO tag (name) VALUES ('vip')",
-                [],
-            )
+            .execute("INSERT INTO tag (name) VALUES ('vip')", [])
             .unwrap();
         db.conn
             .execute(
