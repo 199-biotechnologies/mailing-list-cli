@@ -94,14 +94,14 @@ impl Db {
         &self,
         name: &str,
         description: Option<&str>,
-        resend_audience_id: &str,
+        resend_segment_id: &str,
     ) -> Result<i64, AppError> {
         let now = chrono::Utc::now().to_rfc3339();
         self.conn
             .execute(
-                "INSERT INTO list (name, description, resend_audience_id, created_at)
+                "INSERT INTO list (name, description, resend_segment_id, created_at)
                  VALUES (?1, ?2, ?3, ?4)",
-                params![name, description, resend_audience_id, now],
+                params![name, description, resend_segment_id, now],
             )
             .map_err(|e| {
                 let msg = e.to_string();
@@ -126,7 +126,7 @@ impl Db {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT l.id, l.name, l.description, l.resend_audience_id, l.created_at,
+                "SELECT l.id, l.name, l.description, l.resend_segment_id, l.created_at,
                         COALESCE((SELECT COUNT(*) FROM list_membership lm WHERE lm.list_id = l.id), 0) as member_count
                  FROM list l
                  WHERE l.name = ?1",
@@ -137,7 +137,7 @@ impl Db {
                 id: row.get(0)?,
                 name: row.get(1)?,
                 description: row.get(2)?,
-                resend_audience_id: row.get(3)?,
+                resend_segment_id: row.get(3)?,
                 created_at: row.get(4)?,
                 member_count: row.get(5)?,
             })
@@ -153,7 +153,7 @@ impl Db {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT l.id, l.name, l.description, l.resend_audience_id, l.created_at,
+                "SELECT l.id, l.name, l.description, l.resend_segment_id, l.created_at,
                         COALESCE((SELECT COUNT(*) FROM list_membership lm WHERE lm.list_id = l.id), 0) as member_count
                  FROM list l
                  WHERE l.archived_at IS NULL
@@ -166,7 +166,7 @@ impl Db {
                     id: row.get(0)?,
                     name: row.get(1)?,
                     description: row.get(2)?,
-                    resend_audience_id: row.get(3)?,
+                    resend_segment_id: row.get(3)?,
                     created_at: row.get(4)?,
                     member_count: row.get(5)?,
                 })
@@ -179,7 +179,7 @@ impl Db {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT l.id, l.name, l.description, l.resend_audience_id, l.created_at,
+                "SELECT l.id, l.name, l.description, l.resend_segment_id, l.created_at,
                         COALESCE((SELECT COUNT(*) FROM list_membership lm WHERE lm.list_id = l.id), 0) as member_count
                  FROM list l
                  WHERE l.id = ?1",
@@ -190,7 +190,7 @@ impl Db {
                 id: row.get(0)?,
                 name: row.get(1)?,
                 description: row.get(2)?,
-                resend_audience_id: row.get(3)?,
+                resend_segment_id: row.get(3)?,
                 created_at: row.get(4)?,
                 member_count: row.get(5)?,
             })

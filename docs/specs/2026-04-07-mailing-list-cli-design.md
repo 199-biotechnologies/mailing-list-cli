@@ -962,6 +962,8 @@ Every error envelope carries a `suggestion` field that is a literal command the 
 
 These are the only `email-cli` invocations `mailing-list-cli` makes. Every one of them is auto-tested against a stub `email-cli` binary in CI.
 
+**Minimum `email-cli` version: 0.6.0.** The `audience` noun was retired in v0.6; contacts live in the flat `/contacts` namespace and lists back onto Resend segments (Resend renamed Audiences → Segments in November 2025).
+
 ### 13.1 Health & config
 
 ```bash
@@ -969,21 +971,32 @@ email-cli --json agent-info
 email-cli --json profile test default
 ```
 
-### 13.2 Audiences (one per `mailing-list-cli` list)
+### 13.2 Segments (one per `mailing-list-cli` list)
 
 ```bash
-email-cli --json audience create --name "<list-name>"
-email-cli --json audience list
-email-cli --json audience delete <id>
+email-cli --json segment create --name "<list-name>"
+email-cli --json segment list
+email-cli --json segment delete <id>
+email-cli --json segment contact-add    --contact <id-or-email> --segment <seg-id>
+email-cli --json segment contact-remove --contact <id-or-email> --segment <seg-id>
 ```
 
-### 13.3 Contacts (Resend mirror)
+### 13.3 Contacts (flat /contacts namespace)
 
 ```bash
-email-cli --json contact create --audience <id> --email <e> --first-name <f> --last-name <l>
-email-cli --json contact update  --audience <id> <contact-id> --unsubscribed true
-email-cli --json contact delete  --audience <id> <contact-id>
-email-cli --json contact list    --audience <id>
+email-cli --json contact create \
+    --email <e> \
+    --first-name <f> --last-name <l> \
+    [--segments seg_abc,seg_def] \
+    [--properties '{"company":"Acme","plan":"pro"}']
+
+email-cli --json contact update <id_or_email> \
+    --unsubscribed true \
+    [--properties '{"plan":"enterprise"}']
+
+email-cli --json contact delete <id_or_email>
+email-cli --json contact list [--limit N] [--after <cursor>]
+email-cli --json contact get <id_or_email>
 ```
 
 ### 13.4 Sending
@@ -992,27 +1005,63 @@ email-cli --json contact list    --audience <id>
 # Single send (used by optin start and broadcast preview)
 email-cli --json send --account <a> --to <e> --subject <s> --html <h> --text <t>
 
-# Batch send (used by broadcast send, chunks of 100)
+# Native broadcast (preferred path once mailing-list-cli's broadcast
+# feature lands — gives us auto-wired per-recipient unsubscribe URLs)
+email-cli --json broadcast create \
+    --segment-id <seg-id> \
+    --from "Name <sender@example.com>" \
+    --subject <subject> \
+    --html <html> \
+    [--scheduled-at <iso>] \
+    [--topic-id <topic-id>] \
+    [--send]
+email-cli --json broadcast send <broadcast-id>
+email-cli --json broadcast delete <broadcast-id>   # doubles as cancel for scheduled
+email-cli --json broadcast get <broadcast-id>
+
+# Batch send fallback (chunks of 100, used only when broadcast path is unavailable)
 email-cli --json batch send --file <path-to-json>
 ```
 
-### 13.5 Domain config
+### 13.5 Delivery status polling
+
+```bash
+# Replaces mailing-list-cli's second webhook listener (see §10.4).
+# Poll every N seconds, advance the cursor to the latest seen id.
+email-cli --json email list --limit 100 --after <latest-seen-email-id>
+```
+
+Each row Resend returns includes a `last_event` field (`"sent"`, `"delivered"`, `"bounced"`, etc) which is enough for the bounce / suppression path. The full engagement stream (open → click → complaint) still comes from webhook events mirrored by `email-cli webhook listen` or by `mailing-list-cli`'s own listener.
+
+### 13.6 Domain config
 
 ```bash
 email-cli --json domain update <id> --open-tracking true --click-tracking true
 email-cli --json domain list
 ```
 
-### 13.6 No other email-cli commands are invoked.
+### 13.7 Contact properties schema (optional)
+
+```bash
+# Define a typed custom-field schema at the Resend level so that
+# `contact create --properties '{"company":"Acme"}'` is accepted.
+email-cli --json contact-property create --key company --property-type string
+email-cli --json contact-property list
+email-cli --json contact-property delete <id>
+```
+
+This is only needed if you want custom fields to be visible on Resend's hosted preference center and in Resend-side template merge tags. If you're happy with local-only custom fields, skip it.
+
+### 13.8 No other email-cli commands are invoked.
 
 In particular, `mailing-list-cli` does NOT use:
 - `email-cli inbox` (not its job)
 - `email-cli draft` (not its job)
 - `email-cli sync` (not its job)
-- `email-cli webhook listen` (we run our own — see §10.4)
-- `email-cli events list` (per-message-only, not useful for bulk analytics)
-
-If `email-cli` later adds `events list --since <ts>` and `contact create --properties <json>`, this list expands and the duplication shrinks.
+- `email-cli webhook listen` (we run our own — see §10.4; or we skip it and poll `email list` instead)
+- `email-cli events list` (per-message-only, kept for email-cli's own debugging)
+- `email-cli template` (we compile MJML in-process via `mrml`)
+- `email-cli topic` (deferred until we add preference center support)
 
 ---
 

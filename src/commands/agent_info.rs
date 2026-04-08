@@ -37,8 +37,8 @@ pub fn run() {
         "state_path": "~/.local/share/mailing-list-cli/state.db",
         "auto_json_when_piped": true,
         "env_prefix": "MLC_",
-        "depends_on": ["email-cli"],
-        "status": "v0.0.2 — lists & contacts"
+        "depends_on": ["email-cli >= 0.6.0"],
+        "status": "v0.0.3 — migrated to email-cli v0.6 (audiences → segments)"
     });
     println!("{}", serde_json::to_string_pretty(&manifest).unwrap());
 }

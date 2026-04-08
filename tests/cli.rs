@@ -165,7 +165,7 @@ fn list_create_then_list_ls_round_trip() {
     let value: Value = serde_json::from_str(&stdout).unwrap();
     assert_eq!(value["status"], "success");
     assert_eq!(value["data"]["name"], "newsletter");
-    assert_eq!(value["data"]["resend_audience_id"], "aud_test_12345");
+    assert_eq!(value["data"]["resend_segment_id"], "seg_test_12345");
 
     // List them
     let mut cmd = Command::cargo_bin("mailing-list-cli").unwrap();

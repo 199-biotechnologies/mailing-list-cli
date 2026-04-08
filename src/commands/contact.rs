@@ -41,12 +41,14 @@ fn add(format: Format, db: &Db, cli: &EmailCli, args: ContactAddArgs) -> Result<
         args.last_name.as_deref(),
     )?;
 
-    // 2. Mirror to the Resend audience via email-cli
+    // 2. Mirror to the Resend contact store (flat /contacts) and add to the
+    //    list's backing segment in one call via --segments.
     cli.contact_create(
-        &list.resend_audience_id,
         &args.email,
         args.first_name.as_deref(),
         args.last_name.as_deref(),
+        &[list.resend_segment_id.as_str()],
+        None,
     )?;
 
     // 3. Wire up the local list_membership row

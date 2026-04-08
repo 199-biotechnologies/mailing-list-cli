@@ -6,7 +6,7 @@ pub const MIGRATIONS: &[(&str, &str)] = &[(
         id INTEGER PRIMARY KEY,
         name TEXT NOT NULL UNIQUE,
         description TEXT,
-        resend_audience_id TEXT NOT NULL UNIQUE,
+        resend_segment_id TEXT NOT NULL UNIQUE,
         created_at TEXT NOT NULL,
         archived_at TEXT
     );

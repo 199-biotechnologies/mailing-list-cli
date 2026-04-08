@@ -16,7 +16,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue?style=for-the-badge)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-1.85+-orange?style=for-the-badge&logo=rust&logoColor=white)](https://www.rust-lang.org/)
-[![Status: v0.0.2 Lists & Contacts](https://img.shields.io/badge/Status-v0.0.2_Lists_%26_Contacts-orange?style=for-the-badge)](#status)
+[![Status: v0.0.3 email-cli v0.6](https://img.shields.io/badge/Status-v0.0.3_email--cli_v0.6-orange?style=for-the-badge)](#status)
 [![Built on Resend](https://img.shields.io/badge/Built_on-Resend-000000?style=for-the-badge)](https://resend.com)
 
 ---
@@ -47,9 +47,11 @@ The existing options for an agent are bad:
 
 ## Status
 
-> **v0.0.2 — Lists & contacts shipped.**
+> **v0.0.3 — migrated to `email-cli` v0.6 (audiences → segments).**
 >
-> You can now `list create`, `list ls`, `list show`, `contact add`, and `contact ls`. Each command writes to the local SQLite store and shells out to `email-cli` to mirror the audience and contact onto Resend. 30 tests pass, clippy clean, CI green. Templates, segments, broadcasts, suppression, opt-in, A/B testing, and analytics land in subsequent v0.0.x and v0.1.x releases per the [pinned roadmap issue](https://github.com/199-biotechnologies/mailing-list-cli/issues/1).
+> The `email-cli` team shipped all three of our architectural asks within a day of the [gap analysis](./docs/email-cli-gap-analysis.md) being committed: `contact create --properties <json>`, `email list --after <id>`, and the `broadcast` noun. They also retired the deprecated `audience` noun. `mailing-list-cli` v0.0.3 migrated to the new surface: lists now back onto Resend segments instead of audiences, contacts live in the flat `/contacts` namespace, and the gap analysis is marked **FULFILLED**.
+>
+> Lists, contacts, and tags work end-to-end against real `email-cli` v0.6.2+. 30 tests pass, clippy clean, CI green. Templates, segments, broadcasts, suppression, opt-in, A/B testing, and analytics land in subsequent v0.0.x and v0.1.x releases per the [pinned roadmap issue](https://github.com/199-biotechnologies/mailing-list-cli/issues/1).
 >
 > Read [the research](./research), the [design spec](./docs/specs/2026-04-07-mailing-list-cli-design.md), or the [Phase 1 plan](./docs/plans/2026-04-07-phase-1-foundations.md) to see what we're building toward. Star the repo to follow along.
 

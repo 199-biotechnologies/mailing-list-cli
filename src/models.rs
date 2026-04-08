@@ -5,7 +5,7 @@ pub struct List {
     pub id: i64,
     pub name: String,
     pub description: Option<String>,
-    pub resend_audience_id: String,
+    pub resend_segment_id: String,
     pub created_at: String,
     pub member_count: i64,
 }

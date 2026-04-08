@@ -31,11 +31,11 @@ fn create(format: Format, db: &Db, cli: &EmailCli, args: ListCreateArgs) -> Resu
         });
     }
 
-    // 2. Create the audience on Resend (via email-cli)
-    let audience_id = cli.audience_create(&args.name)?;
+    // 2. Create the backing Resend segment (via email-cli)
+    let segment_id = cli.segment_create(&args.name)?;
 
     // 3. Insert the local row
-    let id = db.list_create(&args.name, args.description.as_deref(), &audience_id)?;
+    let id = db.list_create(&args.name, args.description.as_deref(), &segment_id)?;
     let list = db
         .list_get_by_id(id)?
         .expect("list just created must exist");

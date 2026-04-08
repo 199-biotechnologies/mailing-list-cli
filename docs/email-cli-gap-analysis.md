@@ -1,8 +1,22 @@
 # What `mailing-list-cli` needs from `email-cli`
 
-**Date:** 2026-04-07
+**Date:** 2026-04-07 (original) · 2026-04-08 (**all three asks fulfilled**)
 **Audience:** the team that maintains [`email-cli`](https://github.com/199-biotechnologies/email-cli)
 **Purpose:** a focused list of what to add — and what *not* to add — so that `mailing-list-cli` can wrap a complete mailing-list workflow without doing any Resend HTTP itself.
+
+## STATUS: FULFILLED in `email-cli` v0.6.2 (shipped 2026-04-08)
+
+All three asks below landed in `email-cli` v0.6.x:
+
+1. ✅ **`contact create/update --properties <json>`** — shipped in v0.6.1
+2. ✅ **`email list [--limit N] [--after <id>]`** — shipped in v0.5.x, confirmed in v0.6
+3. ✅ **`broadcast {create,get,update,send,delete}` noun** — shipped in v0.5.x, confirmed in v0.6
+
+Plus a welcome surprise: the `audience` noun was retired entirely and replaced by `segment` (Resend renamed Audiences → Segments in November 2025). `mailing-list-cli` v0.0.3 migrated to the new surface.
+
+The rest of this document is preserved for historical context; nothing in it is still outstanding.
+
+---
 
 ## Architectural rule
 
