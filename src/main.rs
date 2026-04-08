@@ -14,6 +14,7 @@ mod output;
 mod paths;
 mod segment;
 mod template;
+mod webhook;
 
 use clap::Parser;
 use cli::{Cli, Command};
