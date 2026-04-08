@@ -22,6 +22,9 @@ pub fn db_path() -> PathBuf {
 
 #[allow(dead_code)]
 pub fn cache_dir() -> PathBuf {
+    if let Ok(p) = std::env::var("MLC_CACHE_DIR") {
+        return PathBuf::from(p);
+    }
     dirs::cache_dir()
         .expect("XDG cache dir is required")
         .join("mailing-list-cli")
