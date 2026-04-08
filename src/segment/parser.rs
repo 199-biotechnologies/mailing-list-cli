@@ -128,22 +128,31 @@ fn build_and(pair: Pair<Rule>) -> Result<SegmentExpr, ParseError> {
 }
 
 fn build_not(pair: Pair<Rule>) -> Result<SegmentExpr, ParseError> {
-    let mut iter = pair.into_inner();
-    let first = iter
-        .next()
-        .ok_or_else(|| ParseError::new("not_expr had no children", "internal parser bug"))?;
-    match first.as_rule() {
-        Rule::not_op => {
-            let inner = iter.next().ok_or_else(|| {
-                ParseError::new("NOT without operand", "NOT must be followed by a term")
-            })?;
-            let child = build_term(inner)?;
-            Ok(SegmentExpr::Not {
-                child: Box::new(child),
-            })
+    // not_expr = { not_op* ~ term }
+    // Count the leading NOTs and then build the term. Each NOT wraps the
+    // whole expression in another SegmentExpr::Not so that `NOT NOT x` is
+    // parsed as Not(Not(x)) — semantically equivalent to x but preserved
+    // verbatim so round-tripping through JSON keeps the shape.
+    let mut not_count: usize = 0;
+    let mut term_pair: Option<Pair<Rule>> = None;
+    for p in pair.into_inner() {
+        match p.as_rule() {
+            Rule::not_op => not_count += 1,
+            _ => {
+                term_pair = Some(p);
+                break;
+            }
         }
-        _ => build_term(first),
     }
+    let term = term_pair
+        .ok_or_else(|| ParseError::new("NOT without operand", "NOT must be followed by a term"))?;
+    let mut expr = build_term(term)?;
+    for _ in 0..not_count {
+        expr = SegmentExpr::Not {
+            child: Box::new(expr),
+        };
+    }
+    Ok(expr)
 }
 
 fn build_term(pair: Pair<Rule>) -> Result<SegmentExpr, ParseError> {
@@ -541,5 +550,41 @@ mod tests {
         let json = serde_json::to_string(&expr).unwrap();
         let back: SegmentExpr = serde_json::from_str(&json).unwrap();
         assert_eq!(expr, back);
+    }
+
+    #[test]
+    fn double_not_wraps_twice() {
+        // Bug 5 regression: `NOT NOT tag:vip` used to be a parse error
+        // because the grammar allowed at most one `not_op`. The parser
+        // must now accept any number of NOT tokens and wrap the term
+        // once per NOT.
+        let inner = parse("tag:vip").unwrap();
+        let expr = parse("NOT NOT tag:vip").unwrap();
+        match expr {
+            SegmentExpr::Not { child } => match *child {
+                SegmentExpr::Not { child: inner_child } => {
+                    assert_eq!(*inner_child, inner);
+                }
+                other => panic!("expected inner Not, got {other:?}"),
+            },
+            other => panic!("expected outer Not, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn triple_not_wraps_three_times() {
+        let inner = parse("tag:vip").unwrap();
+        let expr = parse("NOT NOT NOT tag:vip").unwrap();
+        // Must be three levels deep.
+        let SegmentExpr::Not { child } = expr else {
+            panic!("expected Not at depth 1");
+        };
+        let SegmentExpr::Not { child } = *child else {
+            panic!("expected Not at depth 2");
+        };
+        let SegmentExpr::Not { child } = *child else {
+            panic!("expected Not at depth 3");
+        };
+        assert_eq!(*child, inner);
     }
 }

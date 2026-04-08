@@ -9,7 +9,7 @@ expression = { SOI ~ or_expr ~ EOI }
 // Precedence: OR < AND < NOT < atom
 or_expr  =  { and_expr ~ (or_op ~ and_expr)* }
 and_expr =  { not_expr ~ (and_op ~ not_expr)* }
-not_expr =  { not_op? ~ term }
+not_expr =  { not_op* ~ term }
 
 or_op  = @{ ^"OR" }
 and_op = @{ ^"AND" }
