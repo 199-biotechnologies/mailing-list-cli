@@ -1,5 +1,5 @@
 use crate::cli::{
-    TemplateAction, TemplateCreateArgs, TemplateEditArgs, TemplateLintArgs, TemplateRenderArgs,
+    TemplateAction, TemplateCreateArgs, TemplateLintArgs, TemplatePreviewArgs, TemplateRenderArgs,
     TemplateRmArgs, TemplateShowArgs,
 };
 use crate::db::Db;
@@ -10,7 +10,12 @@ use crate::template::{
 };
 use serde_json::{Value, json};
 
-const AUTHORING_GUIDE: &str = include_str!("../../assets/template-authoring.md");
+// NOTE: Phase 1 of the v0.2 rearchitecture deletes `template edit` and
+// `template guidelines` (interactive + docs-as-command, both violate the
+// agent-native thesis). Phase 2 rewrites this entire file to drop MJML,
+// frontmatter schemas, Handlebars, and the 20-rule lint; the SCAFFOLD below
+// and the commands still reference those because they'll be replaced together
+// in Phase 2 to avoid a half-working intermediate commit.
 
 const SCAFFOLD: &str = r##"---
 name: {{NAME}}
@@ -51,29 +56,20 @@ pub fn run(format: Format, action: TemplateAction) -> Result<(), AppError> {
         TemplateAction::List => list(format),
         TemplateAction::Show(args) => show(format, args),
         TemplateAction::Render(args) => render(format, args),
+        TemplateAction::Preview(args) => preview_stub(format, args),
         TemplateAction::Lint(args) => lint_cmd(format, args),
-        TemplateAction::Edit(args) => edit(format, args),
         TemplateAction::Rm(args) => remove(format, args),
-        TemplateAction::Guidelines => guidelines(format),
     }
 }
 
-fn guidelines(format: Format) -> Result<(), AppError> {
-    // The guidelines command prints raw markdown to stdout in human mode and
-    // wraps it in a JSON envelope in --json mode so agents can grep for lines.
-    match format {
-        Format::Json => {
-            output::success(
-                Format::Json,
-                "authoring guide",
-                json!({ "guide_markdown": AUTHORING_GUIDE }),
-            );
-        }
-        Format::Human => {
-            println!("{AUTHORING_GUIDE}");
-        }
-    }
-    Ok(())
+/// Stub for `template preview` — full implementation lands in Phase 2 of the
+/// v0.2 rearchitecture along with the substituter and render module rewrite.
+fn preview_stub(_format: Format, _args: TemplatePreviewArgs) -> Result<(), AppError> {
+    Err(AppError::BadInput {
+        code: "preview_not_implemented".into(),
+        message: "`template preview` ships in v0.2.0 (Phase 2 of the rearchitecture)".into(),
+        suggestion: "Use `template render --with-data <file>` for now, pipe to jq | > file".into(),
+    })
 }
 
 fn create(format: Format, args: TemplateCreateArgs) -> Result<(), AppError> {
@@ -241,108 +237,6 @@ fn lint_cmd(format: Format, args: TemplateLintArgs) -> Result<(), AppError> {
             "errors": outcome.error_count,
             "warnings": outcome.warning_count,
             "findings": outcome.findings
-        }),
-    );
-    Ok(())
-}
-
-fn edit(format: Format, args: TemplateEditArgs) -> Result<(), AppError> {
-    // Guard: this is the ONLY interactive command. Refuse if we're not in a TTY,
-    // if --json mode forced the envelope, or if $VISUAL/$EDITOR is unset.
-    // No silent `vi` fallback — that's a footgun for remote/CI users.
-    if format == Format::Json {
-        return Err(AppError::BadInput {
-            code: "edit_not_available_in_json_mode".into(),
-            message: "template edit is the only interactive command and cannot run with --json"
-                .into(),
-            suggestion: "Run without --json, or use `template create --from-file <path>` to update a template from a file on disk".into(),
-        });
-    }
-    if !std::io::IsTerminal::is_terminal(&std::io::stdout()) {
-        return Err(AppError::BadInput {
-            code: "edit_requires_tty".into(),
-            message: "template edit requires an interactive TTY on stdout".into(),
-            suggestion: "Use `template create --from-file <path>` when running from scripts or CI"
-                .into(),
-        });
-    }
-    let editor_path = std::env::var("VISUAL")
-        .or_else(|_| std::env::var("EDITOR"))
-        .map_err(|_| AppError::Config {
-            code: "editor_not_set".into(),
-            message: "neither $VISUAL nor $EDITOR is set".into(),
-            suggestion: "Set $EDITOR to a valid editor path, e.g. `export EDITOR=vim`".into(),
-        })?;
-
-    let db = Db::open()?;
-    let t = db
-        .template_get_by_name(&args.name)?
-        .ok_or_else(|| AppError::BadInput {
-            code: "template_not_found".into(),
-            message: format!("no template named '{}'", args.name),
-            suggestion: "Run `mailing-list-cli template ls`".into(),
-        })?;
-    let tmpdir = tempfile::TempDir::new().map_err(|e| AppError::Transient {
-        code: "tempfile_create_failed".into(),
-        message: format!("could not create tempfile: {e}"),
-        suggestion: "Check /tmp write permissions".into(),
-    })?;
-    let path = tmpdir.path().join(format!("{}.mjml.hbs", args.name));
-    std::fs::write(&path, &t.mjml_source).map_err(|e| AppError::Transient {
-        code: "tempfile_write_failed".into(),
-        message: format!("could not write tempfile: {e}"),
-        suggestion: "Check /tmp write permissions".into(),
-    })?;
-    // IMPORTANT: invoke the editor directly via Command::new, not via a shell.
-    // This avoids command-injection risk if $EDITOR contains shell metacharacters.
-    let status = std::process::Command::new(&editor_path)
-        .arg(&path)
-        .status()
-        .map_err(|e| AppError::Config {
-            code: "editor_launch_failed".into(),
-            message: format!("could not launch editor ({editor_path}): {e}"),
-            suggestion: "Set $EDITOR to a valid editor binary on PATH".into(),
-        })?;
-    if !status.success() {
-        return Err(AppError::BadInput {
-            code: "editor_exited_nonzero".into(),
-            message: format!("editor {editor_path} exited with non-zero status"),
-            suggestion:
-                "Re-run `template edit` or edit the template with `template create --from-file`"
-                    .into(),
-        });
-    }
-    let new_source = std::fs::read_to_string(&path).map_err(|e| AppError::Transient {
-        code: "tempfile_read_failed".into(),
-        message: format!("could not read edited template: {e}"),
-        suggestion: "Re-run `template edit`".into(),
-    })?;
-    let outcome = lint(&new_source);
-    if outcome.has_errors() && !args.force {
-        return Err(AppError::BadInput {
-            code: "template_lint_errors".into(),
-            message: format!(
-                "edited template has {} lint error(s); NOT saved. Re-run with --force to save anyway",
-                outcome.error_count
-            ),
-            suggestion: serde_json::to_string(&outcome.findings).unwrap(),
-        });
-    }
-    let parsed = split_frontmatter(&new_source).map_err(frontmatter_to_bad_input)?;
-    let schema_json = serde_json::to_string(&parsed.schema).unwrap();
-    db.template_upsert(
-        &args.name,
-        &parsed.schema.subject,
-        &new_source,
-        &schema_json,
-    )?;
-    output::success(
-        format,
-        &format!("template '{}' saved", args.name),
-        json!({
-            "name": args.name,
-            "lint_errors": outcome.error_count,
-            "lint_warnings": outcome.warning_count
         }),
     );
     Ok(())

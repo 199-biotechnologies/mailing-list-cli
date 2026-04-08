@@ -168,9 +168,13 @@ pub struct ContactListArgs {
     /// Restrict to a list id (omit to search across all lists)
     #[arg(long)]
     pub list: Option<i64>,
-    /// Filter expression (see the filter grammar reference)
-    #[arg(long)]
-    pub filter: Option<String>,
+    /// JSON filter (SegmentExpr). Use `--filter-json '{"kind":"atom",...}'` or
+    /// pair with `--filter-json-file <path>` to read from disk for readability.
+    #[arg(long = "filter-json")]
+    pub filter_json: Option<String>,
+    /// Read JSON filter from a file (alternative to --filter-json for long expressions)
+    #[arg(long = "filter-json-file")]
+    pub filter_json_file: Option<std::path::PathBuf>,
     /// Maximum number of contacts to return (max 10000)
     #[arg(long, default_value = "100")]
     pub limit: usize,
@@ -264,9 +268,13 @@ pub enum SegmentAction {
 pub struct SegmentCreateArgs {
     /// Segment name (used to reference it later)
     pub name: String,
-    /// Filter expression, see `mailing-list-cli` docs §6 for grammar
-    #[arg(long)]
-    pub filter: String,
+    /// Filter as a JSON SegmentExpr. Use `--filter-json '{"kind":"atom",...}'`
+    /// or pair with `--filter-json-file <path>` for multi-line readability.
+    #[arg(long = "filter-json")]
+    pub filter_json: Option<String>,
+    /// Read JSON filter from a file (alternative to --filter-json)
+    #[arg(long = "filter-json-file")]
+    pub filter_json_file: Option<std::path::PathBuf>,
 }
 
 #[derive(Args, Debug)]
@@ -307,30 +315,33 @@ pub struct ContactImportArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum TemplateAction {
-    /// Create a new template (scaffold) or import an existing MJML file
+    /// Create a new template from an HTML file (or a built-in scaffold if no file)
     Create(TemplateCreateArgs),
     /// List all templates
     #[command(visible_alias = "ls")]
     List,
-    /// Print a template's MJML source
+    /// Print a template's HTML source
     Show(TemplateShowArgs),
-    /// Render a template with merge data (returns JSON)
+    /// Render a template with merge data (returns JSON envelope with embedded html/text)
     Render(TemplateRenderArgs),
+    /// Write a rendered preview to disk for iteration (and optionally open in browser)
+    Preview(TemplatePreviewArgs),
     /// Run the lint rule set against a template
     Lint(TemplateLintArgs),
-    /// Open a template in $EDITOR (then re-lint and save)
-    Edit(TemplateEditArgs),
     /// Delete a template
     Rm(TemplateRmArgs),
-    /// Print the embedded agent authoring guide
-    Guidelines,
 }
 
 #[derive(Args, Debug)]
 pub struct TemplateCreateArgs {
     /// Template name (snake_case)
     pub name: String,
-    /// Import MJML + frontmatter from this file path instead of scaffolding
+    /// Subject line (can contain `{{ var }}` merge tags). Required in v0.2+;
+    /// in the v0.1 transitional path it may be omitted and pulled from the
+    /// frontmatter of the `--from-file` source.
+    #[arg(long)]
+    pub subject: Option<String>,
+    /// Import HTML body from this file path. If omitted, a built-in scaffold is used.
     #[arg(long = "from-file")]
     pub from_file: Option<std::path::PathBuf>,
 }
@@ -352,16 +363,22 @@ pub struct TemplateRenderArgs {
 }
 
 #[derive(Args, Debug)]
-pub struct TemplateLintArgs {
+pub struct TemplatePreviewArgs {
     pub name: String,
+    /// JSON file with merge data (an object: { "first_name": "Alice" })
+    #[arg(long = "with-data")]
+    pub with_data: Option<std::path::PathBuf>,
+    /// Output directory for preview artifacts. Defaults to $MLC_CACHE_DIR/preview/<name>/
+    #[arg(long = "out-dir")]
+    pub out_dir: Option<std::path::PathBuf>,
+    /// Open the rendered HTML in the default browser (macOS `open`, Linux `xdg-open`, Windows `start`)
+    #[arg(long)]
+    pub open: bool,
 }
 
 #[derive(Args, Debug)]
-pub struct TemplateEditArgs {
+pub struct TemplateLintArgs {
     pub name: String,
-    /// Save even if the lint still has errors after the edit
-    #[arg(long)]
-    pub force: bool,
 }
 
 #[derive(Args, Debug)]
@@ -445,32 +462,14 @@ pub struct BroadcastShowArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum WebhookAction {
-    /// Run the HTTP webhook listener (long-running)
-    Listen(WebhookListenArgs),
-    /// Poll email-cli for delivery status updates
+    /// Poll email-cli for delivery status updates (alias of `event poll`)
     Poll(WebhookPollArgs),
-    /// Emit a synthetic event for testing
-    Test(WebhookTestArgs),
-}
-
-#[derive(Args, Debug)]
-pub struct WebhookListenArgs {
-    #[arg(long, default_value = "127.0.0.1:8081")]
-    pub bind: String,
 }
 
 #[derive(Args, Debug)]
 pub struct WebhookPollArgs {
     #[arg(long)]
     pub reset: bool,
-}
-
-#[derive(Args, Debug)]
-pub struct WebhookTestArgs {
-    #[arg(long)]
-    pub to: String,
-    #[arg(long)]
-    pub event: String,
 }
 
 #[derive(Subcommand, Debug)]

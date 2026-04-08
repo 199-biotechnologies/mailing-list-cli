@@ -54,7 +54,7 @@ fn agent_info_lists_phase_3_commands() {
         "contact import <file.csv> --list <id> [--unsafe-no-consent]",
         "tag ls",
         "field create <key> --type <text|number|date|bool|select> [--options a,b,c]",
-        "segment create <name> --filter <expr>",
+        "segment create <name> --filter-json <json> | --filter-json-file <path>",
         "segment members <name> [--limit N] [--cursor C]",
     ] {
         assert!(
@@ -619,11 +619,18 @@ fn segment_create_list_show_members_round_trip() {
         cmd.assert().success();
     }
 
-    // Create segment
+    // Create segment — JSON AST (v0.2 dropped the PEST DSL)
     let mut cmd = Command::cargo_bin("mailing-list-cli").unwrap();
     cmd.env("MLC_CONFIG_PATH", &config_path)
         .env("MLC_DB_PATH", &db_path)
-        .args(["--json", "segment", "create", "vips", "--filter", "tag:vip"]);
+        .args([
+            "--json",
+            "segment",
+            "create",
+            "vips",
+            "--filter-json",
+            r#"{"kind":"atom","atom":{"type":"tag","pred":{"kind":"has","name":"vip"}}}"#,
+        ]);
     cmd.assert().success();
 
     // List
@@ -674,8 +681,9 @@ fn segment_create_list_show_members_round_trip() {
 }
 
 #[test]
-fn segment_create_with_invalid_filter_returns_exit_3() {
+fn segment_create_with_invalid_filter_json_returns_exit_3() {
     let (_tmp, config_path, db_path) = stub_env();
+    // Not valid JSON at all.
     let mut cmd = Command::cargo_bin("mailing-list-cli").unwrap();
     cmd.env("MLC_CONFIG_PATH", &config_path)
         .env("MLC_DB_PATH", &db_path)
@@ -684,9 +692,33 @@ fn segment_create_with_invalid_filter_returns_exit_3() {
             "segment",
             "create",
             "bad",
-            "--filter",
+            "--filter-json",
             "((unclosed",
         ]);
+    cmd.assert().failure().code(3);
+
+    // Valid JSON but wrong shape (missing the SegmentExpr discriminator).
+    let mut cmd = Command::cargo_bin("mailing-list-cli").unwrap();
+    cmd.env("MLC_CONFIG_PATH", &config_path)
+        .env("MLC_DB_PATH", &db_path)
+        .args([
+            "--json",
+            "segment",
+            "create",
+            "bad2",
+            "--filter-json",
+            r#"{"garbage":"value"}"#,
+        ]);
+    cmd.assert().failure().code(3);
+}
+
+#[test]
+fn segment_create_without_filter_returns_exit_3() {
+    let (_tmp, config_path, db_path) = stub_env();
+    let mut cmd = Command::cargo_bin("mailing-list-cli").unwrap();
+    cmd.env("MLC_CONFIG_PATH", &config_path)
+        .env("MLC_DB_PATH", &db_path)
+        .args(["--json", "segment", "create", "empty"]);
     cmd.assert().failure().code(3);
 }
 
@@ -714,10 +746,12 @@ fn contact_ls_with_filter_returns_matching_subset() {
         cmd.assert().success();
     }
 
+    let tag_vip_json =
+        r#"{"kind":"atom","atom":{"type":"tag","pred":{"kind":"has","name":"vip"}}}"#;
     let mut cmd = Command::cargo_bin("mailing-list-cli").unwrap();
     cmd.env("MLC_CONFIG_PATH", &config_path)
         .env("MLC_DB_PATH", &db_path)
-        .args(["--json", "contact", "ls", "--filter", "tag:vip"]);
+        .args(["--json", "contact", "ls", "--filter-json", tag_vip_json]);
     let out = cmd.assert().success();
     let v: Value =
         serde_json::from_str(&String::from_utf8(out.get_output().stdout.clone()).unwrap()).unwrap();
@@ -805,13 +839,14 @@ fn segment_members_matches_contact_ls_filter() {
         cmd.assert().success();
     }
 
-    let filter = "tag:vip AND NOT tag:early";
+    // JSON form of `tag:vip AND NOT tag:early`
+    let filter = r#"{"kind":"and","children":[{"kind":"atom","atom":{"type":"tag","pred":{"kind":"has","name":"vip"}}},{"kind":"not","child":{"kind":"atom","atom":{"type":"tag","pred":{"kind":"has","name":"early"}}}}]}"#;
 
-    // Path 1: contact ls --filter
+    // Path 1: contact ls --filter-json
     let mut cmd = Command::cargo_bin("mailing-list-cli").unwrap();
     cmd.env("MLC_CONFIG_PATH", &config_path)
         .env("MLC_DB_PATH", &db_path)
-        .args(["--json", "contact", "ls", "--filter", filter]);
+        .args(["--json", "contact", "ls", "--filter-json", filter]);
     let out = cmd.assert().success();
     let v_ls: Value =
         serde_json::from_str(&String::from_utf8(out.get_output().stdout.clone()).unwrap()).unwrap();
@@ -820,7 +855,14 @@ fn segment_members_matches_contact_ls_filter() {
     let mut cmd = Command::cargo_bin("mailing-list-cli").unwrap();
     cmd.env("MLC_CONFIG_PATH", &config_path)
         .env("MLC_DB_PATH", &db_path)
-        .args(["--json", "segment", "create", "loyal", "--filter", filter]);
+        .args([
+            "--json",
+            "segment",
+            "create",
+            "loyal",
+            "--filter-json",
+            filter,
+        ]);
     cmd.assert().success();
 
     let mut cmd = Command::cargo_bin("mailing-list-cli").unwrap();
@@ -1104,7 +1146,8 @@ fn contact_ls_filter_on_date_field_queries_correct_column() {
         cmd.assert().success();
     }
 
-    // Filter with a date comparison should find alice
+    // JSON filter: event_date > 2026-01-01 (matches alice)
+    let filter_after_2026 = r#"{"kind":"atom","atom":{"type":"field","key":"event_date","op":"gt","value":"2026-01-01"}}"#;
     let mut cmd = Command::cargo_bin("mailing-list-cli").unwrap();
     cmd.env("MLC_CONFIG_PATH", &config_path)
         .env("MLC_DB_PATH", &db_path)
@@ -1112,8 +1155,8 @@ fn contact_ls_filter_on_date_field_queries_correct_column() {
             "--json",
             "contact",
             "ls",
-            "--filter",
-            "event_date:>:2026-01-01",
+            "--filter-json",
+            filter_after_2026,
         ]);
     let out = cmd.assert().success();
     let v: Value =
@@ -1122,6 +1165,7 @@ fn contact_ls_filter_on_date_field_queries_correct_column() {
     assert_eq!(v["data"]["contacts"][0]["email"], "alice@example.com");
 
     // And a comparison that excludes alice
+    let filter_after_2030 = r#"{"kind":"atom","atom":{"type":"field","key":"event_date","op":"gt","value":"2030-01-01"}}"#;
     let mut cmd = Command::cargo_bin("mailing-list-cli").unwrap();
     cmd.env("MLC_CONFIG_PATH", &config_path)
         .env("MLC_DB_PATH", &db_path)
@@ -1129,8 +1173,8 @@ fn contact_ls_filter_on_date_field_queries_correct_column() {
             "--json",
             "contact",
             "ls",
-            "--filter",
-            "event_date:>:2030-01-01",
+            "--filter-json",
+            filter_after_2030,
         ]);
     let out = cmd.assert().success();
     let v: Value =
@@ -1371,10 +1415,12 @@ fn contact_ls_filter_on_text_field_with_numeric_content() {
 
     // Equality on the zero-padded zip must match; the old path queried
     // value_number which holds NULL for text fields.
+    let zip_eq_00123 =
+        r#"{"kind":"atom","atom":{"type":"field","key":"zip_code","op":"eq","value":"00123"}}"#;
     let mut cmd = Command::cargo_bin("mailing-list-cli").unwrap();
     cmd.env("MLC_CONFIG_PATH", &config_path)
         .env("MLC_DB_PATH", &db_path)
-        .args(["--json", "contact", "ls", "--filter", "zip_code:=:00123"]);
+        .args(["--json", "contact", "ls", "--filter-json", zip_eq_00123]);
     let out = cmd.assert().success();
     let v: Value =
         serde_json::from_str(&String::from_utf8(out.get_output().stdout.clone()).unwrap()).unwrap();
@@ -1584,17 +1630,9 @@ fn template_rm_without_confirm_fails() {
     cmd.assert().failure().code(3);
 }
 
-#[test]
-fn template_guidelines_prints_authoring_guide() {
-    let mut cmd = Command::cargo_bin("mailing-list-cli").unwrap();
-    cmd.args(["--json", "template", "guidelines"]);
-    let out = cmd.assert().success();
-    let v: Value =
-        serde_json::from_str(&String::from_utf8(out.get_output().stdout.clone()).unwrap()).unwrap();
-    let guide = v["data"]["guide_markdown"].as_str().unwrap();
-    assert!(guide.contains("Template Authoring for mailing-list-cli"));
-    assert!(guide.contains("{{{ unsubscribe_link }}}"));
-}
+// `template guidelines` was removed in v0.2 Phase 1 — agents discover
+// the authoring model from the scaffold + `template show` on the default,
+// not a 153-line embedded doctrine. Scaffold becomes the documentation.
 
 #[test]
 fn agent_info_lists_phase_4_commands() {
@@ -1604,10 +1642,9 @@ fn agent_info_lists_phase_4_commands() {
         serde_json::from_str(&String::from_utf8(out.get_output().stdout.clone()).unwrap()).unwrap();
     let commands = v["commands"].as_object().unwrap();
     for key in [
-        "template create <name> [--from-file <path>]",
+        "template create <name> [--subject <text>] [--from-file <path>]",
         "template render <name> [--with-data <file.json>] [--with-placeholders]",
         "template lint <name>",
-        "template guidelines",
     ] {
         assert!(commands.contains_key(key), "agent-info missing {key}");
     }
@@ -2038,42 +2075,10 @@ fn report_engagement_returns_zero_on_empty_db() {
     assert_eq!(v["data"]["engagement_score"].as_i64().unwrap(), 0);
 }
 
-#[test]
-fn webhook_test_to_closed_port_fails() {
-    let (_tmp, config_path, db_path) = stub_env();
-    let mut cmd = Command::cargo_bin("mailing-list-cli").unwrap();
-    cmd.env("MLC_CONFIG_PATH", &config_path)
-        .env("MLC_DB_PATH", &db_path)
-        .args([
-            "--json",
-            "webhook",
-            "test",
-            "--to",
-            "http://127.0.0.1:1", // guaranteed-closed port
-            "--event",
-            "delivered",
-        ]);
-    // curl will fail to connect to a closed port; we just assert non-success.
-    cmd.assert().failure();
-}
-
-#[test]
-fn webhook_test_unknown_event_type_fails_with_exit_3() {
-    let (_tmp, config_path, db_path) = stub_env();
-    let mut cmd = Command::cargo_bin("mailing-list-cli").unwrap();
-    cmd.env("MLC_CONFIG_PATH", &config_path)
-        .env("MLC_DB_PATH", &db_path)
-        .args([
-            "--json",
-            "webhook",
-            "test",
-            "--to",
-            "http://127.0.0.1:1",
-            "--event",
-            "definitely-not-a-real-event",
-        ]);
-    cmd.assert().failure().code(3);
-}
+// `webhook listen` and `webhook test` were removed in v0.2 Phase 1.
+// Polling via `event poll` (which shells out to `email-cli email list`) is
+// sufficient for our latency profile and doesn't require a local HTTP
+// server behind NAT. The tests for those commands are gone with them.
 
 #[test]
 fn agent_info_lists_phase_6_commands() {
@@ -2082,10 +2087,10 @@ fn agent_info_lists_phase_6_commands() {
     let v: Value =
         serde_json::from_str(&String::from_utf8(out.get_output().stdout.clone()).unwrap()).unwrap();
     let commands = v["commands"].as_object().unwrap();
+    // v0.2 Phase 1 dropped `webhook listen` and `webhook test` — poll is the
+    // only supported path. Only the poll + report surface survives here.
     for key in [
-        "webhook listen [--bind <addr>]",
         "webhook poll [--reset]",
-        "webhook test --to <url> --event <type>",
         "event poll [--reset]",
         "report show <broadcast-id>",
         "report links <broadcast-id>",

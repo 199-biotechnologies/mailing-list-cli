@@ -284,12 +284,35 @@ fn list_contacts(format: Format, db: &Db, args: ContactListArgs) -> Result<(), A
     let mut clauses: Vec<String> = Vec::new();
     let mut params: Vec<rusqlite::types::Value> = Vec::new();
 
-    if let Some(expr_text) = &args.filter {
-        let parsed = crate::segment::parser::parse(expr_text).map_err(|e| AppError::BadInput {
-            code: "invalid_filter_expression".into(),
-            message: e.message.clone(),
-            suggestion: e.suggestion.clone(),
-        })?;
+    // Resolve JSON filter from either inline --filter-json or --filter-json-file.
+    let filter_json = match (&args.filter_json, &args.filter_json_file) {
+        (Some(_), Some(_)) => {
+            return Err(AppError::BadInput {
+                code: "filter_json_conflict".into(),
+                message: "pass EITHER --filter-json OR --filter-json-file, not both".into(),
+                suggestion: "Remove one of the flags".into(),
+            });
+        }
+        (Some(s), None) => Some(s.clone()),
+        (None, Some(path)) => {
+            Some(
+                std::fs::read_to_string(path).map_err(|e| AppError::BadInput {
+                    code: "filter_json_file_read_failed".into(),
+                    message: format!("could not read {}: {e}", path.display()),
+                    suggestion: "Check the file path and permissions".into(),
+                })?,
+            )
+        }
+        (None, None) => None,
+    };
+
+    if let Some(json) = &filter_json {
+        let parsed: crate::segment::SegmentExpr =
+            serde_json::from_str(json).map_err(|e| AppError::BadInput {
+                code: "invalid_filter_json".into(),
+                message: format!("filter is not a valid SegmentExpr JSON: {e}"),
+                suggestion: "See the SegmentExpr shape in src/segment/ast.rs".into(),
+            })?;
         let field_types = resolve_field_types(db, &parsed)?;
         let (frag, filter_params) =
             crate::segment::compiler::to_sql_where_with_field_types(&parsed, &field_types);

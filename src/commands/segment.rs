@@ -4,7 +4,7 @@ use crate::cli::{
 use crate::db::Db;
 use crate::error::AppError;
 use crate::output::{self, Format};
-use crate::segment::{compiler, parser};
+use crate::segment::compiler;
 use serde_json::json;
 
 pub fn run(format: Format, action: SegmentAction) -> Result<(), AppError> {
@@ -18,22 +18,41 @@ pub fn run(format: Format, action: SegmentAction) -> Result<(), AppError> {
     }
 }
 
-fn parse_and_store(expr: &str) -> Result<(crate::segment::SegmentExpr, String), AppError> {
-    let parsed = parser::parse(expr).map_err(|e| AppError::BadInput {
-        code: "invalid_filter_expression".into(),
-        message: e.message.clone(),
-        suggestion: e.suggestion.clone(),
-    })?;
-    let filter_json = serde_json::to_string(&parsed).map_err(|e| AppError::Transient {
-        code: "segment_serialize_failed".into(),
-        message: format!("could not serialize SegmentExpr: {e}"),
-        suggestion: "Report as a bug".into(),
-    })?;
-    Ok((parsed, filter_json))
+/// Read the JSON filter from either `--filter-json` inline or
+/// `--filter-json-file <path>`. Exactly one must be provided.
+fn resolve_filter_json(args: &SegmentCreateArgs) -> Result<String, AppError> {
+    match (&args.filter_json, &args.filter_json_file) {
+        (Some(_), Some(_)) => Err(AppError::BadInput {
+            code: "filter_json_conflict".into(),
+            message: "pass EITHER --filter-json OR --filter-json-file, not both".into(),
+            suggestion: "Remove one of the flags".into(),
+        }),
+        (Some(s), None) => Ok(s.clone()),
+        (None, Some(path)) => std::fs::read_to_string(path).map_err(|e| AppError::BadInput {
+            code: "filter_json_file_read_failed".into(),
+            message: format!("could not read {}: {e}", path.display()),
+            suggestion: "Check the file path and permissions".into(),
+        }),
+        (None, None) => Err(AppError::BadInput {
+            code: "filter_json_required".into(),
+            message: "segment create requires --filter-json or --filter-json-file".into(),
+            suggestion: "See the SegmentExpr JSON shape in docs/specs §6".into(),
+        }),
+    }
+}
+
+fn deserialize_filter(json: &str) -> Result<crate::segment::SegmentExpr, AppError> {
+    serde_json::from_str(json).map_err(|e| AppError::BadInput {
+        code: "invalid_filter_json".into(),
+        message: format!("filter is not a valid SegmentExpr JSON: {e}"),
+        suggestion: "See the SegmentExpr shape in src/segment/ast.rs or docs/specs §6".into(),
+    })
 }
 
 fn create(format: Format, db: &Db, args: SegmentCreateArgs) -> Result<(), AppError> {
-    let (_expr, filter_json) = parse_and_store(&args.filter)?;
+    let filter_json = resolve_filter_json(&args)?;
+    // Validate by round-tripping through the AST before storing.
+    let _expr = deserialize_filter(&filter_json)?;
     let id = db.segment_create(&args.name, &filter_json)?;
     output::success(
         format,
@@ -41,7 +60,7 @@ fn create(format: Format, db: &Db, args: SegmentCreateArgs) -> Result<(), AppErr
         json!({
             "id": id,
             "name": args.name,
-            "filter": args.filter
+            "filter_json": filter_json
         }),
     );
     Ok(())

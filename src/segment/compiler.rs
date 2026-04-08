@@ -313,11 +313,25 @@ fn compile_engagement(atom: &EngagementAtom, ctx: &mut Ctx) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::segment::parser::parse;
+    use crate::segment::SegmentExpr;
+
+    /// Parse a JSON filter string to a SegmentExpr for test ergonomics.
+    /// The v0.2 authoring flow is JSON-in, so tests use the same format.
+    fn ast(json: &str) -> SegmentExpr {
+        serde_json::from_str(json).expect("test JSON must be valid SegmentExpr")
+    }
+
+    const TAG_VIP: &str =
+        r#"{"kind":"atom","atom":{"type":"tag","pred":{"kind":"has","name":"vip"}}}"#;
+    const OPENED_LAST_30D: &str = r#"{"kind":"atom","atom":{"type":"engagement","atom":{"kind":"opened_last","duration":{"value":30,"unit":"days"}}}}"#;
+    const CLICKED_LAST_7D: &str = r#"{"kind":"atom","atom":{"type":"engagement","atom":{"kind":"clicked_last","duration":{"value":7,"unit":"days"}}}}"#;
+    const OPENED_LAST_14D: &str = r#"{"kind":"atom","atom":{"type":"engagement","atom":{"kind":"opened_last","duration":{"value":14,"unit":"days"}}}}"#;
+    const HAS_TAG_PREMIUM: &str =
+        r#"{"kind":"atom","atom":{"type":"tag","pred":{"kind":"has","name":"premium"}}}"#;
 
     #[test]
     fn compiles_simple_tag_to_subquery() {
-        let expr = parse("tag:vip").unwrap();
+        let expr = ast(TAG_VIP);
         let (sql, params) = to_sql_where(&expr);
         assert!(sql.contains("contact_tag"));
         assert!(sql.contains("t.name = ?"));
@@ -327,7 +341,9 @@ mod tests {
 
     #[test]
     fn compiles_and_of_tag_and_engagement() {
-        let expr = parse("tag:vip AND opened_last:30d").unwrap();
+        let expr = ast(&format!(
+            r#"{{"kind":"and","children":[{TAG_VIP},{OPENED_LAST_30D}]}}"#
+        ));
         let (sql, params) = to_sql_where(&expr);
         assert!(sql.starts_with('('));
         assert!(sql.contains(" AND "));
@@ -338,7 +354,10 @@ mod tests {
 
     #[test]
     fn compiles_mixed_and_or_not() {
-        let expr = parse("has_tag:premium AND (clicked_last:7d OR opened_last:14d)").unwrap();
+        // has_tag:premium AND (clicked_last:7d OR opened_last:14d)
+        let expr = ast(&format!(
+            r#"{{"kind":"and","children":[{HAS_TAG_PREMIUM},{{"kind":"or","children":[{CLICKED_LAST_7D},{OPENED_LAST_14D}]}}]}}"#
+        ));
         let (sql, params) = to_sql_where(&expr);
         assert!(sql.contains(" OR "));
         assert!(sql.contains(" AND "));
@@ -347,7 +366,7 @@ mod tests {
 
     #[test]
     fn compiles_status_directly() {
-        let expr = parse("status:active").unwrap();
+        let expr = ast(r#"{"kind":"atom","atom":{"type":"status","value":"active"}}"#);
         let (sql, params) = to_sql_where(&expr);
         assert_eq!(sql, "c.status = ?");
         assert_eq!(params, vec![SqlValue::Text("active".into())]);
@@ -355,7 +374,9 @@ mod tests {
 
     #[test]
     fn compiles_builtin_first_name_like() {
-        let expr = parse("first_name:~:ali").unwrap();
+        let expr = ast(
+            r#"{"kind":"atom","atom":{"type":"field","key":"first_name","op":"like","value":"ali"}}"#,
+        );
         let (sql, params) = to_sql_where(&expr);
         assert!(sql.contains("c.first_name LIKE"));
         assert_eq!(params, vec![SqlValue::Text("%ali%".into())]);
@@ -363,8 +384,12 @@ mod tests {
 
     #[test]
     fn compiles_custom_field_number() {
-        let expr = parse("age:>:30").unwrap();
-        let (sql, params) = to_sql_where(&expr);
+        // Declared by the test via the field_types map parameter.
+        let expr =
+            ast(r#"{"kind":"atom","atom":{"type":"field","key":"age","op":"gt","value":"30"}}"#);
+        let mut field_types = std::collections::HashMap::new();
+        field_types.insert("age".to_string(), "number".to_string());
+        let (sql, params) = to_sql_where_with_field_types(&expr, &field_types);
         assert!(sql.contains("contact_field_value"));
         assert!(sql.contains("value_number >"));
         assert_eq!(params.len(), 2);
@@ -374,7 +399,8 @@ mod tests {
 
     #[test]
     fn compiles_never_opened_without_params() {
-        let expr = parse("never_opened").unwrap();
+        let expr =
+            ast(r#"{"kind":"atom","atom":{"type":"engagement","atom":{"kind":"never_opened"}}}"#);
         let (sql, params) = to_sql_where(&expr);
         assert!(sql.contains("NOT IN"));
         assert!(sql.contains("email.opened"));
@@ -383,7 +409,9 @@ mod tests {
 
     #[test]
     fn compiles_list_in_with_name_param() {
-        let expr = parse("list:newsletter").unwrap();
+        let expr = ast(
+            r#"{"kind":"atom","atom":{"type":"list","pred":{"kind":"in","name":"newsletter"}}}"#,
+        );
         let (sql, params) = to_sql_where(&expr);
         assert!(sql.contains("list_membership"));
         assert_eq!(params, vec![SqlValue::Text("newsletter".into())]);
@@ -391,7 +419,7 @@ mod tests {
 
     #[test]
     fn compiles_not_wraps_with_paren() {
-        let expr = parse("NOT tag:vip").unwrap();
+        let expr = ast(&format!(r#"{{"kind":"not","child":{TAG_VIP}}}"#));
         let (sql, _) = to_sql_where(&expr);
         assert!(sql.starts_with("(NOT "));
     }
@@ -419,7 +447,7 @@ mod tests {
             )
             .unwrap();
 
-        let expr = parse("tag:vip").unwrap();
+        let expr = ast(TAG_VIP);
         let (frag, params) = to_sql_where(&expr);
         let sql = format!("SELECT c.id FROM contact c WHERE {frag}");
         let mut stmt = db.conn.prepare(&sql).unwrap();
