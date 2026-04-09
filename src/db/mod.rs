@@ -1370,6 +1370,30 @@ impl Db {
         Ok(())
     }
 
+    /// Load the entire suppression list into an in-memory `HashSet<String>`
+    /// keyed by lowercased email. Used by the send pipeline to replace per-
+    /// recipient `is_email_suppressed` queries with O(1) lookups. Worth the
+    /// trade-off any time the send size is > ~100 recipients.
+    ///
+    /// Normalization: the `suppression.email` column uses COLLATE NOCASE in
+    /// SQLite, so we lowercase on the Rust side to preserve that semantics
+    /// when the caller does a `set.contains(&email.to_ascii_lowercase())`.
+    pub fn suppression_all_emails(&self) -> Result<std::collections::HashSet<String>, AppError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT email FROM suppression")
+            .map_err(query_err)?;
+        let rows = stmt
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(query_err)?;
+        let mut set = std::collections::HashSet::new();
+        for row in rows {
+            let email = row.map_err(query_err)?;
+            set.insert(email.to_ascii_lowercase());
+        }
+        Ok(set)
+    }
+
     pub fn contact_set_status(&self, email: &str, status: &str) -> Result<(), AppError> {
         self.conn
             .execute(
@@ -2025,5 +2049,42 @@ mod tests {
         assert!(db.is_email_suppressed("blocked@example.com").unwrap());
         assert!(db.is_email_suppressed("BLOCKED@example.com").unwrap()); // COLLATE NOCASE
         assert!(!db.is_email_suppressed("alice@example.com").unwrap());
+    }
+
+    #[test]
+    fn suppression_all_emails_returns_normalized_set() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let db = Db::open_at(tmp.path()).unwrap();
+        db.suppression_insert("ALICE@example.com", "hard_bounced", None)
+            .unwrap();
+        db.suppression_insert("bob@example.com", "unsubscribed", None)
+            .unwrap();
+        // Insert via raw SQL too to cover collation edge cases.
+        db.conn
+            .execute(
+                "INSERT INTO suppression (email, reason, suppressed_at) VALUES ('Carol@Example.com', 'complained', '2026-01-01')",
+                [],
+            )
+            .unwrap();
+
+        let set = db.suppression_all_emails().unwrap();
+        assert_eq!(set.len(), 3);
+        // All three lookups hit regardless of the original casing, because
+        // the set is keyed by lowercased email and the caller is expected
+        // to lowercase on lookup too.
+        assert!(set.contains("alice@example.com"));
+        assert!(set.contains("bob@example.com"));
+        assert!(set.contains("carol@example.com"));
+        // Sanity: the raw uppercased forms are NOT in the set, proving we
+        // normalized on insert rather than relying on COLLATE NOCASE.
+        assert!(!set.contains("ALICE@example.com"));
+    }
+
+    #[test]
+    fn suppression_all_emails_on_empty_table() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let db = Db::open_at(tmp.path()).unwrap();
+        let set = db.suppression_all_emails().unwrap();
+        assert!(set.is_empty());
     }
 }

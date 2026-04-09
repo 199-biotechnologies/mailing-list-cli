@@ -110,11 +110,16 @@ pub fn send_broadcast(id: i64) -> Result<PipelineResult, AppError> {
     // Mark sending
     db.broadcast_set_status(id, "sending", None)?;
 
-    // 4. Suppression filter + insert pending broadcast_recipient rows
+    // 4. Suppression filter + insert pending broadcast_recipient rows.
+    // v0.3: load the entire suppression list into an in-memory HashSet once
+    // before the filter loop. Replaces O(N) per-recipient `is_email_suppressed`
+    // DB queries with O(1) HashSet::contains lookups — the biggest single
+    // win for 10k+ sends.
+    let suppressed_set = db.suppression_all_emails()?;
     let mut to_send: Vec<Contact> = Vec::with_capacity(recipients.len());
     let mut suppressed_count = 0;
     for recipient in recipients {
-        if db.is_email_suppressed(&recipient.email)? {
+        if suppressed_set.contains(&recipient.email.to_ascii_lowercase()) {
             db.broadcast_recipient_insert(id, recipient.id, "suppressed")?;
             suppressed_count += 1;
             continue;
