@@ -1077,6 +1077,27 @@ impl Db {
         target_kind: &str,
         target_id: i64,
     ) -> Result<i64, AppError> {
+        // v0.4 (P0.2): idempotent — detect-and-fail if a broadcast with
+        // the same name already exists. Previously `broadcast create --name
+        // foo` twice created two broadcasts with duplicate names.
+        let existing: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT id FROM broadcast WHERE name = ?1",
+                params![name],
+                |r| r.get(0),
+            )
+            .ok();
+        if let Some(existing_id) = existing {
+            return Err(AppError::BadInput {
+                code: "broadcast_already_exists".into(),
+                message: format!("a broadcast named '{name}' already exists (id {existing_id})"),
+                suggestion: format!(
+                    "Use `mailing-list-cli broadcast show {existing_id}` to see it, or pick a different name"
+                ),
+            });
+        }
+
         let now = chrono::Utc::now().to_rfc3339();
         self.conn
             .execute(
