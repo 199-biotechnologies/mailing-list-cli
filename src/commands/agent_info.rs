@@ -73,7 +73,7 @@ pub fn run() {
         "auto_json_when_piped": true,
         "env_prefix": "MLC_",
         "depends_on": ["email-cli >= 0.6.0"],
-        "status": "v0.2.3 — blind-test polish: scaffold expanded with quick-reference comment, plain-text fallback decodes named/numeric HTML entities, `<span>` footer stub (safe to inject inside `<p>`), `template render` defaults to injected stubs (use `--raw` for literal tokens), stale MJML help strings removed"
+        "status": "v0.3.0 — production-grade 10k: 429/5xx retry with exponential backoff in batch_send, transactional DB writes per chunk, preloaded suppression HashSet, complaint/bounce rate guards over 30-day window, `contact erase` (GDPR Article 17), `broadcast resume` for mid-send recovery, sender_domain_verified health check"
     });
     println!("{}", serde_json::to_string_pretty(&manifest).unwrap());
 }
