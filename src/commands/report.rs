@@ -43,15 +43,30 @@ fn links(format: Format, args: ReportLinksArgs) -> Result<(), AppError> {
 }
 
 fn engagement(format: Format, args: ReportEngagementArgs) -> Result<(), AppError> {
-    // Phase 6 ships a naive aggregation; Phase 8 elaborates with per-list/per-segment scoping.
+    // v0.3.3 (F5.1): GPT Pro flagged two bugs here:
+    //   1. DB errors were silently coerced to 0 via unwrap_or(0) — now propagated via ?
+    //   2. --list / --segment flags were accepted but never filtered the queries
+    //      (only used as a label). Proper fix needs a JOIN through broadcast →
+    //      broadcast_recipient → contact → list_membership, which is v0.5 work.
+    //      For now: document the limitation in the output and log a warning.
     let db = Db::open()?;
     let target = args
         .list
         .as_deref()
         .or(args.segment.as_deref())
         .unwrap_or("all");
+    if target != "all" {
+        eprintln!(
+            "warning: --list/--segment filters are not yet implemented for `report engagement`; showing global counts labeled as '{target}'"
+        );
+    }
     let since = chrono::Utc::now() - chrono::Duration::days(args.days);
     let since_str = since.to_rfc3339();
+    let query_err = |e: rusqlite::Error| AppError::Transient {
+        code: "engagement_query_failed".into(),
+        message: format!("engagement query failed: {e}"),
+        suggestion: "Run `mailing-list-cli health` to check DB state".into(),
+    };
     let opens: i64 = db
         .conn
         .query_row(
@@ -59,7 +74,7 @@ fn engagement(format: Format, args: ReportEngagementArgs) -> Result<(), AppError
             rusqlite::params![since_str],
             |r| r.get(0),
         )
-        .unwrap_or(0);
+        .map_err(query_err)?;
     let clicks: i64 = db
         .conn
         .query_row(
@@ -67,12 +82,13 @@ fn engagement(format: Format, args: ReportEngagementArgs) -> Result<(), AppError
             rusqlite::params![since_str],
             |r| r.get(0),
         )
-        .unwrap_or(0);
+        .map_err(query_err)?;
     output::success(
         format,
         &format!("engagement for {} (last {} days)", target, args.days),
         json!({
             "target": target,
+            "target_filter_applied": target == "all",
             "days": args.days,
             "opens": opens,
             "clicks": clicks,
