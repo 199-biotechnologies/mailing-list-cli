@@ -1202,6 +1202,27 @@ impl Db {
         Ok(())
     }
 
+    /// v0.3.2: Clear the broadcast lock columns WITHOUT changing status.
+    /// Used by early-error paths in `send_broadcast` (e.g. F2.1 indeterminate
+    /// state detection) where we acquired the lock, found a problem, and
+    /// want to release the lock so the next acquire can proceed — but the
+    /// status field already reflects the in-progress state and shouldn't
+    /// be touched.
+    #[allow(dead_code)]
+    pub fn broadcast_clear_lock_only(&self, id: i64) -> Result<(), AppError> {
+        self.conn
+            .execute(
+                "UPDATE broadcast SET locked_by_pid = NULL, locked_at = NULL WHERE id = ?1",
+                params![id],
+            )
+            .map_err(|e| AppError::Transient {
+                code: "broadcast_clear_lock_failed".into(),
+                message: format!("could not clear broadcast lock: {e}"),
+                suggestion: "Retry the command".into(),
+            })?;
+        Ok(())
+    }
+
     /// v0.3.1: Final status transition that ALSO clears the lock columns.
     /// Use at the end of the broadcast send pipeline (sent OR failed). The
     /// lock must be cleared so subsequent `broadcast resume` / `broadcast

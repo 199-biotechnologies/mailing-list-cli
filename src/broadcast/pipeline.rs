@@ -79,6 +79,25 @@ pub fn send_broadcast(id: i64, force_unlock: bool) -> Result<PipelineResult, App
         });
     }
 
+    // v0.3.2 (F13.1): unsubscribe secret check happens BEFORE the lock
+    // acquire so a missing secret cannot leave the broadcast in `sending`
+    // state with a held lock. Many other early-error paths still have this
+    // bug — fixing them properly is v0.5+ work (wrap the body in a closure
+    // and clear the lock on any error). For v0.3.2 we close the most
+    // user-visible case (the F13.1 secret check, since it was the v0.3.2
+    // change that exposed the issue).
+    let _ = std::env::var(&config.unsubscribe.secret_env).map_err(|_| AppError::Config {
+        code: "missing_unsubscribe_secret".into(),
+        message: format!(
+            "environment variable `{}` is not set; cannot sign unsubscribe links",
+            config.unsubscribe.secret_env
+        ),
+        suggestion: format!(
+            "Export {} with at least 16 bytes of random data (e.g. `export {}=$(openssl rand -hex 32)`) before running broadcast send",
+            config.unsubscribe.secret_env, config.unsubscribe.secret_env
+        ),
+    })?;
+
     // v0.3.1: atomic lock acquire BEFORE any other work. Two simultaneous
     // `broadcast send 1` invocations both used to flip draft→sending and
     // double-send every recipient. Now exactly one acquires the lock; the
@@ -323,6 +342,11 @@ pub fn send_broadcast(id: i64, force_unlock: bool) -> Result<PipelineResult, App
         if !prepared.is_empty() {
             let chunk_indices: Vec<String> =
                 prepared.iter().map(|a| a.chunk_index.to_string()).collect();
+            // v0.3.2: clear the lock before propagating so the operator
+            // can re-run after manually fixing the attempt rows without
+            // having to wait for the 30-min stale-lock timeout or use
+            // --force-unlock.
+            let _ = db.broadcast_clear_lock_only(id);
             return Err(AppError::Transient {
                 code: "broadcast_attempt_indeterminate".into(),
                 message: format!(
@@ -331,7 +355,7 @@ pub fn send_broadcast(id: i64, force_unlock: bool) -> Result<PipelineResult, App
                     chunk_indices.join(", ")
                 ),
                 suggestion: format!(
-                    "Inspect Resend dashboard or `email-cli email list` filtered by tag broadcast_id={id} to determine if the chunk(s) shipped. Then either: (a) manually mark applied with `sqlite3 STATE.DB \"UPDATE broadcast_send_attempt SET state='applied' WHERE id IN (...);\"` and re-run, or (b) mark failed with the same SQL pattern and re-run to retry the chunk. Refusing to auto-retry to avoid duplicate sends."
+                    "Inspect Resend dashboard or `email-cli email list` filtered by tag broadcast_id={id} to determine if the chunk(s) shipped. Then either: (a) manually mark applied with `sqlite3 STATE.DB \"UPDATE broadcast_send_attempt SET state='applied' WHERE id IN (...);\"` and re-run, or (b) mark failed with the same SQL pattern and re-run to retry the chunk. Refusing to auto-retry to avoid duplicate sends. The lock has been cleared so you can re-run after fixing."
                 ),
             });
         }
