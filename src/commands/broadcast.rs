@@ -133,16 +133,43 @@ fn schedule(format: Format, args: BroadcastScheduleArgs) -> Result<(), AppError>
 
 fn send(format: Format, args: BroadcastSendArgs) -> Result<(), AppError> {
     let result = pipeline::send_broadcast(args.id, args.force_unlock)?;
-    output::success(
-        format,
-        &format!("broadcast {} sent", args.id),
-        json!({
-            "broadcast_id": result.broadcast_id,
-            "sent": result.sent_count,
-            "suppressed": result.suppressed_count,
-            "failed": result.failed_count
-        }),
-    );
+    let data = json!({
+        "broadcast_id": result.broadcast_id,
+        "sent": result.sent_count,
+        "suppressed": result.suppressed_count,
+        "failed": result.failed_count
+    });
+
+    // v0.3.3 (F2.2): partial chunk failures must not be reported as success.
+    // Previously, 99 of 100 chunks succeeding + 1 failing still emitted a
+    // success envelope and exit 0. Agents treated this as a clean send.
+    // Now: exit 1 with a clear "partial" signal so the agent knows to resume.
+    if result.failed_count > 0 {
+        output::success(
+            format,
+            &format!(
+                "broadcast {} partially sent ({} sent, {} failed)",
+                args.id, result.sent_count, result.failed_count
+            ),
+            data,
+        );
+        return Err(AppError::Transient {
+            code: "broadcast_partial_send".into(),
+            message: format!(
+                "broadcast {} sent {}/{} recipients; {} failed",
+                args.id,
+                result.sent_count,
+                result.sent_count + result.failed_count,
+                result.failed_count
+            ),
+            suggestion: format!(
+                "Run `mailing-list-cli broadcast resume {}` to retry the failed chunks",
+                args.id
+            ),
+        });
+    }
+
+    output::success(format, &format!("broadcast {} sent", args.id), data);
     Ok(())
 }
 

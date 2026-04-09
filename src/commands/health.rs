@@ -16,15 +16,17 @@ pub fn run(format: Format) -> Result<(), AppError> {
         }
         Err(e) => {
             checks.push(("config_loads", "fail", e.message().to_string()));
+            // v0.3.3 (F5.1): emit one output, return Ok. Same fix as the
+            // final-status path — agents branch on data.status, not exit code.
             output::success(
                 format,
-                "health: degraded",
+                "health: fail",
                 json!({
                     "status": "fail",
                     "checks": checks_to_json(&checks)
                 }),
             );
-            return Err(e);
+            return Ok(());
         }
     };
 
@@ -162,6 +164,16 @@ pub fn run(format: Format) -> Result<(), AppError> {
         "ok"
     };
 
+    // v0.3.3 (F5.1): health always emits exactly ONE output (the success
+    // envelope with all checks) and returns Ok. The `data.status` field
+    // is the machine-readable signal ("ok" | "degraded" | "fail").
+    //
+    // Previously, health emitted a success envelope to stdout AND THEN
+    // returned Err which caused main.rs to emit a second error envelope
+    // to stderr. Agents saw two conflicting outputs for one command,
+    // which violated the "stable machine interface" doctrine.
+    //
+    // Exit code is always 0. Agents branch on `data.status`, not exit code.
     let label = format!("health: {status}");
     output::success(
         format,
@@ -171,15 +183,6 @@ pub fn run(format: Format) -> Result<(), AppError> {
             "checks": checks_to_json(&checks)
         }),
     );
-
-    if status == "fail" {
-        return Err(AppError::Config {
-            code: "health_check_failed".into(),
-            message: "one or more health checks failed".into(),
-            suggestion: "Inspect the `checks` field in the JSON output".into(),
-        });
-    }
-
     Ok(())
 }
 

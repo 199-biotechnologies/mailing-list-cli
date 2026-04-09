@@ -26,7 +26,7 @@ pub fn run(format: Format, action: ContactAction) -> Result<(), AppError> {
 fn erase(format: Format, db: &mut Db, args: crate::cli::ContactEraseArgs) -> Result<(), AppError> {
     if !args.confirm {
         return Err(AppError::BadInput {
-            code: "confirm_required".into(),
+            code: "confirmation_required".into(),
             message: "`contact erase` requires --confirm because it is irreversible".into(),
             suggestion: format!(
                 "Rerun with: mailing-list-cli contact erase {} --confirm",

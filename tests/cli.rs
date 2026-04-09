@@ -240,7 +240,12 @@ profile = "default"
 }
 
 #[test]
-fn health_without_email_cli_fails_with_exit_2() {
+fn health_without_email_cli_reports_fail_status() {
+    // v0.3.3 (F5.1): health always exits 0 and reports status in the
+    // data.status field. Agents branch on that, not exit code. This test
+    // was previously `health_without_email_cli_fails_with_exit_2` and
+    // expected exit 2 — that was the double-output bug (success envelope
+    // to stdout + error envelope to stderr).
     let tmp = isolated_env();
     let config_path = tmp.path().join("config.toml");
     std::fs::write(
@@ -261,7 +266,20 @@ profile = "default"
     cmd.env("MLC_CONFIG_PATH", &config_path)
         .env("MLC_DB_PATH", &db_path)
         .args(["--json", "health"]);
-    cmd.assert().failure().code(2);
+    let out = cmd.assert().success();
+    let stdout = String::from_utf8(out.get_output().stdout.clone()).unwrap();
+    let value: Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(
+        value["data"]["status"], "fail",
+        "health should report fail status when email-cli is missing"
+    );
+    let checks = value["data"]["checks"].as_array().unwrap();
+    assert!(
+        checks
+            .iter()
+            .any(|c| c["name"] == "email_cli" && c["state"] == "fail"),
+        "email_cli check should be in fail state"
+    );
 }
 
 #[test]

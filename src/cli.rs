@@ -67,7 +67,7 @@ pub enum Command {
         #[command(subcommand)]
         action: BroadcastAction,
     },
-    /// Webhook ingestion: listen, poll, test
+    /// Webhook event ingestion via polling
     Webhook {
         #[command(subcommand)]
         action: WebhookAction,

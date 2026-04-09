@@ -51,9 +51,9 @@ pub fn run() {
             "report links <broadcast-id>": "Per-link click counts for a broadcast",
             "report engagement [--list <name>|--segment <name>] [--days N]": "Engagement score across a list/segment",
             "report deliverability [--days N]": "Rolling-window bounce rate / complaint rate / domain health",
-            "update [--check]": "Self-update from GitHub Releases",
-            "skill install": "Install skill files into Claude / Codex / Gemini paths",
-            "skill status": "Show which platforms have the skill installed"
+            "update [--check]": "(stub) Self-update from GitHub Releases — not yet implemented, reinstall via cargo or homebrew",
+            "skill install": "(stub) Install skill files into Claude / Codex / Gemini paths — not yet implemented",
+            "skill status": "(stub) Show which platforms have the skill installed — not yet implemented"
         },
         "flags": {
             "--json": "Force JSON output even on a TTY (global flag, applies to every subcommand). Without --json, output mode is auto-detected via IsTerminal: TTY → human, pipe/redirect → JSON envelope"
