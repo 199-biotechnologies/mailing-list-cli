@@ -13,7 +13,15 @@
 #   STUB_EMAIL_CLI_PERMANENT_4XX=1   -- always fail with a permanent 4xx-shaped
 #                                        validation error (exit 3). No retries
 #                                        should be attempted.
+#   STUB_EMAIL_CLI_SLEEP_SEC=N       -- sleep N seconds before responding (used
+#                                        by v0.3.1 timeout tests to simulate a
+#                                        hung email-cli subprocess).
 set -euo pipefail
+
+# v0.3.1: optional sleep BEFORE any branching, to simulate a hung subprocess.
+if [[ -n "${STUB_EMAIL_CLI_SLEEP_SEC:-}" ]]; then
+    sleep "$STUB_EMAIL_CLI_SLEEP_SEC"
+fi
 
 # Strip the leading --json flag so the case statements work cleanly.
 if [[ "${1:-}" == "--json" ]]; then

@@ -1,6 +1,6 @@
 use crate::error::AppError;
 use serde_json::Value;
-use std::process::{Command, Stdio};
+use std::process::{Command, Output, Stdio};
 use std::sync::Mutex;
 use std::time::{Duration as StdDuration, Instant};
 
@@ -21,6 +21,82 @@ const MAX_RETRIES: u32 = 4;
 /// Indexed by retry number (0 = first retry after the initial attempt failed).
 /// Schedule: 500ms, 1s, 2s, 4s — total worst-case ~7.5s per chunk.
 const BACKOFF_MS: &[u64] = &[500, 1_000, 2_000, 4_000];
+
+/// v0.3.1: Default timeout for any single email-cli subprocess invocation.
+/// 120 seconds is generous: a 100-recipient batch send typically takes 2-5
+/// seconds. Override via `MLC_EMAIL_CLI_TIMEOUT_SEC` env var.
+const DEFAULT_EMAIL_CLI_TIMEOUT_SEC: u64 = 120;
+const ENV_EMAIL_CLI_TIMEOUT: &str = "MLC_EMAIL_CLI_TIMEOUT_SEC";
+const TIMEOUT_POLL_INTERVAL_MS: u64 = 50;
+
+/// Spawn `cmd` and wait for it to complete with a timeout. On timeout the
+/// child is killed (SIGKILL on Unix) and the function returns
+/// `AppError::Transient { code: "email_cli_timeout", ... }`.
+///
+/// The existing retry classifier in `is_retryable_batch_error` already treats
+/// stderr containing `"timeout"` as retryable, AND exit code 4 as retryable;
+/// the timeout error message contains the word "timeout", so timed-out chunks
+/// naturally feed back into `batch_send`'s exponential-backoff retry loop.
+///
+/// `make_spawn_err` is a closure that converts an `io::Error` from
+/// `Command::spawn()` into an AppError — call sites use this to preserve their
+/// own context-specific error code + message + suggestion. Wait failures and
+/// timeouts use hardcoded `email_cli_io` and `email_cli_timeout` codes.
+///
+/// Implementation note: uses `Child::try_wait()` in a 50ms poll loop instead
+/// of threads or the wait-timeout crate. Single-threaded, dep-free, child
+/// handle stays in main thread for cheap kill on timeout.
+fn run_with_timeout<F>(mut cmd: Command, make_spawn_err: F) -> Result<Output, AppError>
+where
+    F: FnOnce(std::io::Error) -> AppError,
+{
+    let timeout_sec = std::env::var(ENV_EMAIL_CLI_TIMEOUT)
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(DEFAULT_EMAIL_CLI_TIMEOUT_SEC);
+    let timeout = StdDuration::from_secs(timeout_sec);
+    let deadline = Instant::now() + timeout;
+
+    let mut child = cmd
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(make_spawn_err)?;
+
+    loop {
+        match child.try_wait() {
+            Ok(Some(_status)) => {
+                return child.wait_with_output().map_err(|e| AppError::Transient {
+                    code: "email_cli_io".into(),
+                    message: format!("could not read email-cli output: {e}"),
+                    suggestion: "Retry the command".into(),
+                });
+            }
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(AppError::Transient {
+                        code: "email_cli_timeout".into(),
+                        message: format!("email-cli subprocess timed out after {timeout_sec}s"),
+                        suggestion: format!(
+                            "Increase {ENV_EMAIL_CLI_TIMEOUT} (currently {timeout_sec}s) or check email-cli health"
+                        ),
+                    });
+                }
+                std::thread::sleep(StdDuration::from_millis(TIMEOUT_POLL_INTERVAL_MS));
+            }
+            Err(e) => {
+                let _ = child.kill();
+                return Err(AppError::Transient {
+                    code: "email_cli_wait_failed".into(),
+                    message: format!("could not poll email-cli subprocess: {e}"),
+                    suggestion: "Retry the command".into(),
+                });
+            }
+        }
+    }
+}
 
 /// Classify a `batch send` subprocess failure as either a transient error
 /// (should be retried) or a permanent one (should fail fast).
@@ -75,16 +151,15 @@ impl EmailCli {
     /// Run `email-cli --json agent-info` and return the parsed manifest.
     pub fn agent_info(&self) -> Result<Value, AppError> {
         self.throttle();
-        let output = Command::new(&self.path)
-            .args(["--json", "agent-info"])
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output()
-            .map_err(|e| AppError::Config {
-                code: "email_cli_not_found".into(),
-                message: format!("could not run `{}`: {e}", self.path),
-                suggestion: "Install email-cli with `brew install 199-biotechnologies/tap/email-cli` or set [email_cli].path in config.toml".into(),
-            })?;
+        let mut cmd = Command::new(&self.path);
+        cmd.args(["--json", "agent-info"]);
+        let output = run_with_timeout(cmd, |e| {
+            AppError::Config {
+            code: "email_cli_not_found".into(),
+            message: format!("could not run `{}`: {e}", self.path),
+            suggestion: "Install email-cli with `brew install 199-biotechnologies/tap/email-cli` or set [email_cli].path in config.toml".into(),
+        }
+        })?;
 
         if !output.status.success() {
             return Err(AppError::Transient {
@@ -114,16 +189,13 @@ impl EmailCli {
     /// subcommand entirely.
     pub fn segment_create(&self, name: &str) -> Result<String, AppError> {
         self.throttle();
-        let output = Command::new(&self.path)
-            .args(["--json", "segment", "create", "--name", name])
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output()
-            .map_err(|e| AppError::Config {
-                code: "email_cli_invoke_failed".into(),
-                message: format!("could not run email-cli: {e}"),
-                suggestion: "Check that email-cli is on PATH (v0.6+ required)".into(),
-            })?;
+        let mut cmd = Command::new(&self.path);
+        cmd.args(["--json", "segment", "create", "--name", name]);
+        let output = run_with_timeout(cmd, |e| AppError::Config {
+            code: "email_cli_invoke_failed".into(),
+            message: format!("could not run email-cli: {e}"),
+            suggestion: "Check that email-cli is on PATH (v0.6+ required)".into(),
+        })?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -207,16 +279,13 @@ impl EmailCli {
             args.push(props.to_string());
         }
 
-        let output = Command::new(&self.path)
-            .args(&args)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output()
-            .map_err(|e| AppError::Config {
-                code: "email_cli_invoke_failed".into(),
-                message: format!("could not run email-cli: {e}"),
-                suggestion: "Check that email-cli is on PATH (v0.6+ required)".into(),
-            })?;
+        let mut cmd = Command::new(&self.path);
+        cmd.args(&args);
+        let output = run_with_timeout(cmd, |e| AppError::Config {
+            code: "email_cli_invoke_failed".into(),
+            message: format!("could not run email-cli: {e}"),
+            suggestion: "Check that email-cli is on PATH (v0.6+ required)".into(),
+        })?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -251,24 +320,21 @@ impl EmailCli {
         segment_id: &str,
     ) -> Result<(), AppError> {
         self.throttle();
-        let output = Command::new(&self.path)
-            .args([
-                "--json",
-                "segment",
-                "contact-add",
-                "--contact",
-                contact_email,
-                "--segment",
-                segment_id,
-            ])
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output()
-            .map_err(|e| AppError::Config {
-                code: "email_cli_invoke_failed".into(),
-                message: format!("could not run email-cli: {e}"),
-                suggestion: "Check that email-cli is on PATH (v0.6+ required)".into(),
-            })?;
+        let mut cmd = Command::new(&self.path);
+        cmd.args([
+            "--json",
+            "segment",
+            "contact-add",
+            "--contact",
+            contact_email,
+            "--segment",
+            segment_id,
+        ]);
+        let output = run_with_timeout(cmd, |e| AppError::Config {
+            code: "email_cli_invoke_failed".into(),
+            message: format!("could not run email-cli: {e}"),
+            suggestion: "Check that email-cli is on PATH (v0.6+ required)".into(),
+        })?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             // "already in segment" is a successful no-op
@@ -304,16 +370,13 @@ impl EmailCli {
     #[allow(dead_code)]
     pub fn domain_list(&self) -> Result<Vec<Value>, AppError> {
         self.throttle();
-        let output = Command::new(&self.path)
-            .args(["--json", "domain", "list"])
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output()
-            .map_err(|e| AppError::Config {
-                code: "email_cli_invoke_failed".into(),
-                message: format!("could not run email-cli domain list: {e}"),
-                suggestion: "Check that email-cli is on PATH".into(),
-            })?;
+        let mut cmd = Command::new(&self.path);
+        cmd.args(["--json", "domain", "list"]);
+        let output = run_with_timeout(cmd, |e| AppError::Config {
+            code: "email_cli_invoke_failed".into(),
+            message: format!("could not run email-cli domain list: {e}"),
+            suggestion: "Check that email-cli is on PATH".into(),
+        })?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             return Err(AppError::Transient {
@@ -364,22 +427,19 @@ impl EmailCli {
         let mut attempt: u32 = 0;
         loop {
             self.throttle();
-            let output = Command::new(&self.path)
-                .args([
-                    "--json",
-                    "batch",
-                    "send",
-                    "--file",
-                    batch_file.to_str().unwrap_or(""),
-                ])
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .output()
-                .map_err(|e| AppError::Config {
-                    code: "email_cli_invoke_failed".into(),
-                    message: format!("could not run email-cli batch send: {e}"),
-                    suggestion: "Check that email-cli is on PATH (v0.6+ required)".into(),
-                })?;
+            let mut cmd = Command::new(&self.path);
+            cmd.args([
+                "--json",
+                "batch",
+                "send",
+                "--file",
+                batch_file.to_str().unwrap_or(""),
+            ]);
+            let output = run_with_timeout(cmd, |e| AppError::Config {
+                code: "email_cli_invoke_failed".into(),
+                message: format!("could not run email-cli batch send: {e}"),
+                suggestion: "Check that email-cli is on PATH (v0.6+ required)".into(),
+            })?;
 
             if !output.status.success() {
                 let stderr = String::from_utf8_lossy(&output.stderr).to_string();
@@ -482,29 +542,26 @@ impl EmailCli {
         text: &str,
     ) -> Result<String, AppError> {
         self.throttle();
-        let output = Command::new(&self.path)
-            .args([
-                "--json",
-                "send",
-                "--account",
-                from,
-                "--to",
-                to,
-                "--subject",
-                subject,
-                "--html",
-                html,
-                "--text",
-                text,
-            ])
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output()
-            .map_err(|e| AppError::Config {
-                code: "email_cli_invoke_failed".into(),
-                message: format!("could not run email-cli send: {e}"),
-                suggestion: "Check that email-cli is on PATH".into(),
-            })?;
+        let mut cmd = Command::new(&self.path);
+        cmd.args([
+            "--json",
+            "send",
+            "--account",
+            from,
+            "--to",
+            to,
+            "--subject",
+            subject,
+            "--html",
+            html,
+            "--text",
+            text,
+        ]);
+        let output = run_with_timeout(cmd, |e| AppError::Config {
+            code: "email_cli_invoke_failed".into(),
+            message: format!("could not run email-cli send: {e}"),
+            suggestion: "Check that email-cli is on PATH".into(),
+        })?;
         // Real email-cli returns errors as JSON in stdout AND non-zero exit.
         // Try to parse the stdout JSON either way so we can surface the actual
         // error message.
@@ -570,16 +627,13 @@ impl EmailCli {
             args.push("--after".into());
             args.push(cursor.into());
         }
-        let output = Command::new(&self.path)
-            .args(&args)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output()
-            .map_err(|e| AppError::Config {
-                code: "email_cli_invoke_failed".into(),
-                message: format!("could not run email-cli email list: {e}"),
-                suggestion: "Check that email-cli is on PATH".into(),
-            })?;
+        let mut cmd = Command::new(&self.path);
+        cmd.args(&args);
+        let output = run_with_timeout(cmd, |e| AppError::Config {
+            code: "email_cli_invoke_failed".into(),
+            message: format!("could not run email-cli email list: {e}"),
+            suggestion: "Check that email-cli is on PATH".into(),
+        })?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             return Err(AppError::Transient {
@@ -602,16 +656,13 @@ impl EmailCli {
     #[allow(dead_code)]
     pub fn profile_test(&self) -> Result<Value, AppError> {
         self.throttle();
-        let output = Command::new(&self.path)
-            .args(["--json", "profile", "test", &self.profile])
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output()
-            .map_err(|e| AppError::Config {
-                code: "email_cli_invoke_failed".into(),
-                message: format!("could not run email-cli: {e}"),
-                suggestion: "Check that email-cli is on PATH".into(),
-            })?;
+        let mut cmd = Command::new(&self.path);
+        cmd.args(["--json", "profile", "test", &self.profile]);
+        let output = run_with_timeout(cmd, |e| AppError::Config {
+            code: "email_cli_invoke_failed".into(),
+            message: format!("could not run email-cli: {e}"),
+            suggestion: "Check that email-cli is on PATH".into(),
+        })?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -819,5 +870,73 @@ mod tests {
         ));
         assert!(!is_retryable_batch_error(Some(3), "HTTP 401 Unauthorized"));
         assert!(!is_retryable_batch_error(Some(3), "HTTP 400 Bad Request"));
+    }
+
+    // ─── v0.3.1: subprocess timeout tests ─────────────────────────────────
+
+    #[test]
+    fn run_with_timeout_completes_under_deadline() {
+        // Default 120s timeout — fast stub returns normally.
+        unsafe {
+            std::env::remove_var("MLC_EMAIL_CLI_TIMEOUT_SEC");
+            std::env::remove_var("STUB_EMAIL_CLI_SLEEP_SEC");
+            std::env::remove_var("STUB_EMAIL_CLI_FAIL_COUNT");
+            std::env::remove_var("STUB_EMAIL_CLI_PERMANENT_4XX");
+        }
+        let cli = EmailCli::new(retry_stub_path(), "test");
+        let result = cli.agent_info();
+        assert!(
+            result.is_ok(),
+            "fast stub should complete under default timeout, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn run_with_timeout_kills_hung_subprocess() {
+        // Stub sleeps 5 seconds; we set timeout to 1 second; should kill at ~1s.
+        unsafe {
+            std::env::set_var("MLC_EMAIL_CLI_TIMEOUT_SEC", "1");
+            std::env::set_var("STUB_EMAIL_CLI_SLEEP_SEC", "5");
+            std::env::remove_var("STUB_EMAIL_CLI_FAIL_COUNT");
+            std::env::remove_var("STUB_EMAIL_CLI_PERMANENT_4XX");
+        }
+        let cli = EmailCli::new(retry_stub_path(), "test");
+        let start = std::time::Instant::now();
+        let result = cli.agent_info();
+        let elapsed = start.elapsed();
+        unsafe {
+            std::env::remove_var("MLC_EMAIL_CLI_TIMEOUT_SEC");
+            std::env::remove_var("STUB_EMAIL_CLI_SLEEP_SEC");
+        }
+        match result {
+            Ok(_) => panic!("expected timeout error, got Ok"),
+            Err(err) => {
+                assert_eq!(err.code(), "email_cli_timeout");
+                assert!(
+                    elapsed.as_secs() < 4,
+                    "should have been killed at ~1s, took {elapsed:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn run_with_timeout_env_var_parses_higher_value() {
+        // Sanity: setting a higher timeout still works for fast stubs.
+        unsafe {
+            std::env::set_var("MLC_EMAIL_CLI_TIMEOUT_SEC", "300");
+            std::env::remove_var("STUB_EMAIL_CLI_SLEEP_SEC");
+            std::env::remove_var("STUB_EMAIL_CLI_FAIL_COUNT");
+            std::env::remove_var("STUB_EMAIL_CLI_PERMANENT_4XX");
+        }
+        let cli = EmailCli::new(retry_stub_path(), "test");
+        let result = cli.agent_info();
+        unsafe {
+            std::env::remove_var("MLC_EMAIL_CLI_TIMEOUT_SEC");
+        }
+        assert!(
+            result.is_ok(),
+            "300s timeout should be parseable, got: {result:?}"
+        );
     }
 }
