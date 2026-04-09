@@ -17,6 +17,21 @@ case "$1" in
             echo '{"version":"1","status":"success","data":{"reachable":true}}'
             exit 0
         fi
+        if [ "$2" = "list" ] || [ "$2" = "ls" ]; then
+            # v0.3.2 F9.1: STUB_EMAIL_CLI_PROFILE_COUNT controls how many
+            # profiles the stub returns. Default 1 (single-profile happy path).
+            count="${STUB_EMAIL_CLI_PROFILE_COUNT:-1}"
+            if [ "$count" = "0" ]; then
+                echo '{"version":"1","status":"success","data":[]}'
+            elif [ "$count" = "1" ]; then
+                echo '{"version":"1","status":"success","data":[{"name":"default","created_at":"2026-04-09 00:00:00"}]}'
+            elif [ "$count" = "2" ]; then
+                echo '{"version":"1","status":"success","data":[{"name":"default","created_at":"2026-04-09 00:00:00"},{"name":"second","created_at":"2026-04-09 00:00:00"}]}'
+            else
+                echo '{"version":"1","status":"success","data":[{"name":"default","created_at":"2026-04-09 00:00:00"},{"name":"second","created_at":"2026-04-09 00:00:00"},{"name":"third","created_at":"2026-04-09 00:00:00"}]}'
+            fi
+            exit 0
+        fi
         ;;
     "segment")
         case "$2" in

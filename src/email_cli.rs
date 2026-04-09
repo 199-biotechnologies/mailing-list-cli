@@ -7,6 +7,15 @@ use std::time::{Duration as StdDuration, Instant};
 /// A handle to the local email-cli binary.
 pub struct EmailCli {
     pub path: String,
+    /// v0.3.2 (F9.1 doc): The configured email-cli profile name.
+    /// **Currently used ONLY by `profile_test()` for the health check.**
+    /// It is NOT threaded through other commands because email-cli 0.6.3
+    /// has no global `--profile <name>` flag — profile selection is
+    /// implicit (whatever profile is active in email-cli's database).
+    /// For multi-profile operators, use the
+    /// `email_cli_single_profile` health check to detect ambiguity.
+    /// Upstream issue tracking: please file against 199-biotechnologies/email-cli
+    /// if this matters for your setup.
     pub profile: String,
     last_call: Mutex<Instant>,
 }
@@ -684,6 +693,55 @@ impl EmailCli {
             message: format!("invalid JSON from email-cli: {e}"),
             suggestion: "Check email-cli version compatibility".into(),
         })
+    }
+
+    /// v0.3.2 (F9.1): list configured email-cli profiles. Returns the parsed
+    /// names. Used by the `email_cli_single_profile` health check to detect
+    /// the multi-profile ambiguity case (since email-cli has no per-command
+    /// profile selection, having more than one profile is operationally
+    /// risky — we can't be sure which one is in effect).
+    #[allow(dead_code)]
+    pub fn profile_list(&self) -> Result<Vec<String>, AppError> {
+        self.throttle();
+        let mut cmd = Command::new(&self.path);
+        cmd.args(["--json", "profile", "list"]);
+        let output = run_with_timeout(cmd, |e| AppError::Config {
+            code: "email_cli_invoke_failed".into(),
+            message: format!("could not run email-cli profile list: {e}"),
+            suggestion: "Check that email-cli is on PATH".into(),
+        })?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(AppError::Transient {
+                code: "email_cli_profile_list_failed".into(),
+                message: format!(
+                    "email-cli profile list failed: {}",
+                    stderr.lines().next().unwrap_or("(no stderr)")
+                ),
+                suggestion: "Run `email-cli profile list` directly to see the error".into(),
+            });
+        }
+
+        let parsed: Value =
+            serde_json::from_slice(&output.stdout).map_err(|e| AppError::Transient {
+                code: "email_cli_profile_list_parse".into(),
+                message: format!("invalid JSON from email-cli profile list: {e}"),
+                suggestion: "Check email-cli version compatibility".into(),
+            })?;
+
+        // email-cli 0.6.3 returns: {"data": [{"name": "...", "created_at": "..."}], ...}
+        // (single-level data array, NOT data.data nesting like batch_send)
+        let names = parsed
+            .get("data")
+            .and_then(|d| d.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|p| p.get("name").and_then(|n| n.as_str()).map(String::from))
+                    .collect::<Vec<String>>()
+            })
+            .unwrap_or_default();
+        Ok(names)
     }
 }
 

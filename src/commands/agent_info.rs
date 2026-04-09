@@ -8,7 +8,7 @@ pub fn run() {
         "description": "Newsletter and mailing list management from your terminal. Built for AI agents on top of email-cli.",
         "commands": {
             "agent-info": "Machine-readable capability manifest (this output)",
-            "health": "Run a system health check (config, email-cli on PATH, sender_domain_verified, db reachable, schema_version current)",
+            "health": "Run a system health check (config, db reachable, email-cli on PATH, email-cli single-profile uniqueness, sender_domain_verified, db schema version current)",
             "list create <name> [--description <text>]": "Create a list (backed by a Resend segment via email-cli)",
             "list ls": "List all lists with subscriber counts",
             "list show <id>": "Show one list's details",
@@ -79,7 +79,11 @@ pub fn run() {
             "MLC_UNSUBSCRIBE_SECRET": "HMAC secret for one-click unsubscribe link signatures. Required for `broadcast send`. Min 16 bytes"
         },
         "depends_on": ["email-cli >= 0.6.0"],
-        "status": "v0.3.1 — emergency hardening: atomic broadcast lock CAS (no double-send race even on concurrent invocation), email-cli subprocess timeout (MLC_EMAIL_CLI_TIMEOUT_SEC, default 120s, kills hung child on deadline), schema version safety check (Db::open fails fast with exit 2 when DB is newer than binary), agent-info + AGENTS.md sync. Built on v0.3.0 production-grade 10k foundations."
+        "known_limitations": [
+            "email-cli profile selection is database-implicit. The `[email_cli].profile` config field is used ONLY by the health-check `profile test` call. email-cli 0.6.3 has no global `--profile <name>` flag, so other commands cannot select a profile per-invocation. Multi-profile setups are ambiguous — `mailing-list-cli health` will warn if more than one email-cli profile is configured. Track the upstream issue at 199-biotechnologies/email-cli.",
+            "30-day complaint/bounce rate guards in `broadcast send` preflight are computed from the local `event` table, which is populated by `webhook poll` paginating `email-cli email list` by email ID and reading `last_event` per row. This means later state changes on already-seen emails are invisible, and only the most recent event per email is recorded. Treat the rates as approximate. The guards still fire (and are still useful safety nets), but operators should not over-trust the exact percentages. Source: GPT Pro F3.2 from 2026-04-09 hardening review. See docs/email-cli-gap-analysis.md."
+        ],
+        "status": "v0.3.2 — emergency hardening round 2: write-ahead broadcast_send_attempt table closes the ESP-acceptance-before-local-commit duplicate-send window (F2.1), unsubscribe secret hard-fails when MLC_UNSUBSCRIBE_SECRET is unset (F13.1, no more dev fallback), new email_cli_single_profile health check warns on multi-profile ambiguity (F9.1). Plus doctrinal note that v0.3.0 complaint/bounce guards are computed from a lossy event mirror (F3.2 — left firing, documented as approximate). Built on v0.3.1 hardening foundations."
     });
     println!("{}", serde_json::to_string_pretty(&manifest).unwrap());
 }

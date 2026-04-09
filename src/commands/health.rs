@@ -41,6 +41,45 @@ pub fn run(format: Format) -> Result<(), AppError> {
         Err(e) => checks.push(("email_cli", "fail", e.message().to_string())),
     }
 
+    // 3a. (v0.3.2 F9.1) email-cli profile uniqueness. Profile selection in
+    // email-cli 0.6.3 is database-implicit — there's no per-command --profile
+    // flag — so multiple profiles in one email-cli database creates real
+    // ambiguity about which one is being used. Warn so the operator knows.
+    match cli.profile_list() {
+        Ok(profiles) => {
+            let count = profiles.len();
+            if count == 0 {
+                checks.push((
+                    "email_cli_single_profile",
+                    "fail",
+                    "email-cli has no profiles configured. Run `email-cli profile add <name>` first.".into(),
+                ));
+            } else if count == 1 {
+                checks.push((
+                    "email_cli_single_profile",
+                    "ok",
+                    format!("1 profile: {}", profiles[0]),
+                ));
+            } else {
+                checks.push((
+                    "email_cli_single_profile",
+                    "warn",
+                    format!(
+                        "{count} email-cli profiles configured ({}); mailing-list-cli has no per-command profile selection because email-cli 0.6.3 has no --profile flag. Verify the active profile is correct, or remove unused profiles with `email-cli profile rm`.",
+                        profiles.join(", ")
+                    ),
+                ));
+            }
+        }
+        Err(e) => {
+            checks.push((
+                "email_cli_single_profile",
+                "warn",
+                format!("could not list profiles: {}", e.message()),
+            ));
+        }
+    }
+
     // 4. physical_address is set
     if config.sender.physical_address.is_some() {
         checks.push(("physical_address", "ok", String::new()));

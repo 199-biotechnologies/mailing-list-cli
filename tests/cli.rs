@@ -171,6 +171,75 @@ profile = "default"
 }
 
 #[test]
+fn health_email_cli_single_profile_check_warns_on_multiple() {
+    // v0.3.2 F9.1: when email-cli has more than one profile configured,
+    // mailing-list-cli has no per-command profile selection (email-cli 0.6.3
+    // has no --profile flag), so the active profile is ambiguous. The new
+    // email_cli_single_profile health check warns in that case.
+    let stub = fixture_path("stub-email-cli.sh");
+    assert!(stub.exists(), "stub-email-cli.sh must exist at {:?}", stub);
+
+    let tmp = isolated_env();
+    let config_path = tmp.path().join("config.toml");
+    std::fs::write(
+        &config_path,
+        format!(
+            r#"
+[sender]
+physical_address = "123 Test St"
+
+[email_cli]
+path = "{}"
+profile = "default"
+"#,
+            stub.display()
+        ),
+    )
+    .unwrap();
+    let db_path = tmp.path().join("state.db");
+
+    // 1. With STUB_EMAIL_CLI_PROFILE_COUNT=2, the check should warn.
+    let mut cmd = Command::cargo_bin("mailing-list-cli").unwrap();
+    cmd.env("MLC_CONFIG_PATH", &config_path)
+        .env("MLC_DB_PATH", &db_path)
+        .env("STUB_EMAIL_CLI_PROFILE_COUNT", "2")
+        .args(["--json", "health"]);
+    let out = cmd.assert().success();
+    let stdout = String::from_utf8(out.get_output().stdout.clone()).unwrap();
+    let value: Value = serde_json::from_str(&stdout).unwrap();
+    let checks = value["data"]["checks"].as_array().unwrap();
+    let multi_profile_check = checks
+        .iter()
+        .find(|c| c["name"] == "email_cli_single_profile")
+        .expect("email_cli_single_profile check must exist in the health output");
+    assert_eq!(
+        multi_profile_check["state"], "warn",
+        "expected warn state for 2 profiles, got: {multi_profile_check}"
+    );
+    let message = multi_profile_check["message"].as_str().unwrap_or("");
+    assert!(
+        message.contains("2 email-cli profiles") || message.contains("profiles configured"),
+        "warn message should mention profile count, got: {message}"
+    );
+
+    // 2. With STUB_EMAIL_CLI_PROFILE_COUNT=1, the check should be ok.
+    let mut cmd = Command::cargo_bin("mailing-list-cli").unwrap();
+    cmd.env("MLC_CONFIG_PATH", &config_path)
+        .env("MLC_DB_PATH", &db_path)
+        .env("STUB_EMAIL_CLI_PROFILE_COUNT", "1")
+        .args(["--json", "health"]);
+    let out = cmd.assert().success();
+    let stdout = String::from_utf8(out.get_output().stdout.clone()).unwrap();
+    let value: Value = serde_json::from_str(&stdout).unwrap();
+    let checks = value["data"]["checks"].as_array().unwrap();
+    let multi_profile_check = checks
+        .iter()
+        .find(|c| c["name"] == "email_cli_single_profile")
+        .unwrap();
+    assert_eq!(multi_profile_check["state"], "ok");
+}
+
+#[test]
 fn health_without_email_cli_fails_with_exit_2() {
     let tmp = isolated_env();
     let config_path = tmp.path().join("config.toml");
