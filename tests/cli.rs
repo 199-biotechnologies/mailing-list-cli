@@ -1888,6 +1888,60 @@ fn broadcast_send_via_stub_updates_status_to_sent() {
 }
 
 #[test]
+fn broadcast_send_fails_fast_without_unsubscribe_secret() {
+    // v0.3.2 F13.1: previously the pipeline silently fell back to a
+    // hardcoded "mlc-unsubscribe-dev" secret when MLC_UNSUBSCRIBE_SECRET
+    // was unset, signing forgeable unsubscribe tokens. Now it must
+    // refuse to proceed and exit with code 2 (Config).
+    let (_tmp, config_path, db_path, cache_dir) = seed_broadcast_env();
+    let mut cmd = Command::cargo_bin("mailing-list-cli").unwrap();
+    cmd.env("MLC_CONFIG_PATH", &config_path)
+        .env("MLC_DB_PATH", &db_path)
+        .env("MLC_CACHE_DIR", &cache_dir)
+        .args([
+            "--json",
+            "broadcast",
+            "create",
+            "--name",
+            "no-secret-test",
+            "--template",
+            "simple_ad",
+            "--to",
+            "list:news",
+        ]);
+    cmd.assert().success();
+
+    let mut cmd = Command::cargo_bin("mailing-list-cli").unwrap();
+    let output = cmd
+        .env("MLC_CONFIG_PATH", &config_path)
+        .env("MLC_DB_PATH", &db_path)
+        .env("MLC_CACHE_DIR", &cache_dir)
+        // DELIBERATELY do NOT set MLC_UNSUBSCRIBE_SECRET
+        .env_remove("MLC_UNSUBSCRIBE_SECRET")
+        .args(["--json", "broadcast", "send", "1"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8(output.stdout.clone()).unwrap();
+    let stderr = String::from_utf8(output.stderr.clone()).unwrap();
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "expected exit 2, got {:?}\nstdout: {stdout}\nstderr: {stderr}",
+        output.status.code()
+    );
+    // Error envelopes are emitted on stderr in this codebase (success on stdout).
+    let v: Value = serde_json::from_str(&stderr)
+        .unwrap_or_else(|e| panic!("stderr was not JSON ({e}): stdout={stdout} stderr={stderr}"));
+    assert_eq!(v["status"], "error");
+    assert_eq!(v["error"]["code"], "missing_unsubscribe_secret");
+    let suggestion = v["error"]["suggestion"].as_str().unwrap_or("");
+    assert!(
+        suggestion.contains("MLC_UNSUBSCRIBE_SECRET") || suggestion.contains("openssl"),
+        "suggestion should hint at the env var or openssl, got: {suggestion}"
+    );
+}
+
+#[test]
 fn broadcast_cancel_without_confirm_fails() {
     let (_tmp, config_path, db_path, cache_dir) = seed_broadcast_env();
     let mut cmd = Command::cargo_bin("mailing-list-cli").unwrap();

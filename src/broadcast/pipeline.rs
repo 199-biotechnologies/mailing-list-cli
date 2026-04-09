@@ -230,8 +230,23 @@ pub fn send_broadcast(id: i64, force_unlock: bool) -> Result<PipelineResult, App
 
     // 5-7. Per-recipient render (done inside the chunk loop below)
     // 8. Write JSON batch file + shell out in chunks of 100
+    // v0.3.2 F13.1: hard-fail when MLC_UNSUBSCRIBE_SECRET is unset.
+    // The previous fallback was "mlc-unsubscribe-dev" — a publicly-known
+    // value committed to the source — meaning anyone running without the
+    // env var was shipping forgeable unsubscribe tokens. Production must
+    // refuse to sign tokens with a dev key.
     let unsubscribe_secret = std::env::var(&config.unsubscribe.secret_env)
-        .unwrap_or_else(|_| "mlc-unsubscribe-dev".to_string());
+        .map_err(|_| AppError::Config {
+            code: "missing_unsubscribe_secret".into(),
+            message: format!(
+                "environment variable `{}` is not set; cannot sign unsubscribe links",
+                config.unsubscribe.secret_env
+            ),
+            suggestion: format!(
+                "Export {} with at least 16 bytes of random data (e.g. `export {}=$(openssl rand -hex 32)`) before running broadcast send",
+                config.unsubscribe.secret_env, config.unsubscribe.secret_env
+            ),
+        })?;
     let now_epoch = chrono::Utc::now().timestamp();
     let public_url = config.unsubscribe.public_url.clone();
 
@@ -428,8 +443,23 @@ pub fn preview_broadcast(id: i64, to: &str) -> Result<PipelineResult, AppError> 
         .trim()
         .to_string();
 
+    // v0.3.2 F13.1: hard-fail when MLC_UNSUBSCRIBE_SECRET is unset.
+    // The previous fallback was "mlc-unsubscribe-dev" — a publicly-known
+    // value committed to the source — meaning anyone running without the
+    // env var was shipping forgeable unsubscribe tokens. Production must
+    // refuse to sign tokens with a dev key.
     let unsubscribe_secret = std::env::var(&config.unsubscribe.secret_env)
-        .unwrap_or_else(|_| "mlc-unsubscribe-dev".to_string());
+        .map_err(|_| AppError::Config {
+            code: "missing_unsubscribe_secret".into(),
+            message: format!(
+                "environment variable `{}` is not set; cannot sign unsubscribe links",
+                config.unsubscribe.secret_env
+            ),
+            suggestion: format!(
+                "Export {} with at least 16 bytes of random data (e.g. `export {}=$(openssl rand -hex 32)`) before running broadcast send",
+                config.unsubscribe.secret_env, config.unsubscribe.secret_env
+            ),
+        })?;
     let now_epoch = chrono::Utc::now().timestamp();
     let preview_token =
         sign_token(unsubscribe_secret.as_bytes(), 0, id, now_epoch).map_err(|e| {
