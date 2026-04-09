@@ -10,6 +10,27 @@ pub struct Db {
     pub conn: Connection,
 }
 
+/// v0.3.1: Result of attempting to acquire a broadcast send lock.
+///
+/// `broadcast_try_acquire_send_lock` does atomic CAS via UPDATE inside a
+/// BEGIN IMMEDIATE transaction. The predicate is satisfied (lock taken) if
+/// any of: status is draft/scheduled, OR the same PID is reacquiring (resume),
+/// OR no PID currently holds it, OR the lock is older than `stale_after`,
+/// OR the caller passed `force_unlock = true`.
+#[derive(Debug, Clone)]
+pub enum LockAcquireResult {
+    /// Lock acquired; status flipped to 'sending'.
+    Acquired,
+    /// Another process holds the lock and the lock is not stale.
+    AlreadyHeld { pid: i64, locked_at: String },
+    /// Lock existed but was older than `stale_after`; we took it. The
+    /// previous lock-holder PID and timestamp are returned for diagnostics.
+    BrokeStale {
+        previous_pid: i64,
+        locked_at: String,
+    },
+}
+
 impl Db {
     /// Open the default database. Creates parent directories if needed and runs migrations.
     pub fn open() -> Result<Self, AppError> {
@@ -1159,6 +1180,107 @@ impl Db {
             )
             .map_err(query_err)?;
         Ok(())
+    }
+
+    /// v0.3.1: Final status transition that ALSO clears the lock columns.
+    /// Use at the end of the broadcast send pipeline (sent OR failed). The
+    /// lock must be cleared so subsequent `broadcast resume` / `broadcast
+    /// send` invocations can proceed without lock confusion.
+    #[allow(dead_code)]
+    pub fn broadcast_set_status_and_clear_lock(
+        &self,
+        id: i64,
+        status: &str,
+        sent_at: Option<&str>,
+    ) -> Result<(), AppError> {
+        self.conn
+            .execute(
+                "UPDATE broadcast SET status = ?1, sent_at = COALESCE(?2, sent_at), locked_by_pid = NULL, locked_at = NULL WHERE id = ?3",
+                params![status, sent_at, id],
+            )
+            .map_err(query_err)?;
+        Ok(())
+    }
+
+    /// v0.3.1: Try to acquire the broadcast send lock atomically. See
+    /// `LockAcquireResult` for the returned variants. Implementation uses
+    /// `BEGIN IMMEDIATE` for the SELECT-and-UPDATE so two concurrent
+    /// invocations can never both observe an unlocked row.
+    #[allow(dead_code)]
+    pub fn broadcast_try_acquire_send_lock(
+        &mut self,
+        id: i64,
+        pid: i64,
+        stale_after: chrono::Duration,
+        force_unlock: bool,
+    ) -> Result<LockAcquireResult, AppError> {
+        let tx = self.conn.transaction().map_err(|e| AppError::Transient {
+            code: "broadcast_lock_tx_failed".into(),
+            message: format!("could not begin lock transaction: {e}"),
+            suggestion: "Retry the command".into(),
+        })?;
+
+        let row: (String, Option<i64>, Option<String>) = tx
+            .query_row(
+                "SELECT status, locked_by_pid, locked_at FROM broadcast WHERE id = ?1",
+                params![id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .map_err(|e| AppError::BadInput {
+                code: "broadcast_not_found".into(),
+                message: format!("broadcast {id} not found: {e}"),
+                suggestion: "Check the broadcast id with `mailing-list-cli broadcast ls`".into(),
+            })?;
+        let (status, current_pid, current_locked_at) = row;
+
+        let now = chrono::Utc::now();
+        let now_str = now.to_rfc3339();
+
+        let is_resume_by_us = current_pid == Some(pid);
+        let is_unlocked = current_pid.is_none();
+        let is_stale = current_locked_at
+            .as_deref()
+            .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+            .map(|t| (now - t.with_timezone(&chrono::Utc)) > stale_after)
+            .unwrap_or(false);
+        let status_allows = matches!(status.as_str(), "draft" | "scheduled");
+
+        let predicate_ok =
+            status_allows || is_resume_by_us || is_unlocked || is_stale || force_unlock;
+
+        if !predicate_ok {
+            // AlreadyHeld — drop the transaction without an UPDATE.
+            let pid = current_pid.unwrap_or(0);
+            let locked_at = current_locked_at.unwrap_or_default();
+            return Ok(LockAcquireResult::AlreadyHeld { pid, locked_at });
+        }
+
+        // Take the lock: status → 'sending', locked_by_pid → us, locked_at → now.
+        tx.execute(
+            "UPDATE broadcast SET status = 'sending', locked_by_pid = ?1, locked_at = ?2 WHERE id = ?3",
+            params![pid, now_str, id],
+        )
+        .map_err(|e| AppError::Transient {
+            code: "broadcast_lock_update_failed".into(),
+            message: format!("could not write lock: {e}"),
+            suggestion: "Retry the command".into(),
+        })?;
+
+        tx.commit().map_err(|e| AppError::Transient {
+            code: "broadcast_lock_commit_failed".into(),
+            message: format!("could not commit lock transaction: {e}"),
+            suggestion: "Retry the command".into(),
+        })?;
+
+        // BrokeStale only if there WAS a different live-looking lock that was old.
+        if is_stale && !is_resume_by_us && !is_unlocked {
+            Ok(LockAcquireResult::BrokeStale {
+                previous_pid: current_pid.unwrap_or(0),
+                locked_at: current_locked_at.unwrap_or_default(),
+            })
+        } else {
+            Ok(LockAcquireResult::Acquired)
+        }
     }
 
     #[allow(dead_code)]
@@ -2397,6 +2519,136 @@ mod tests {
         }
         let (_, _, delivered) = db.historical_send_rates(30).unwrap();
         assert_eq!(delivered, 0, "old events should be excluded from window");
+    }
+
+    // ─── v0.3.1: broadcast send lock CAS ──────────────────────────────────
+
+    fn fresh_db_with_broadcast() -> (tempfile::NamedTempFile, Db, i64) {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let db = Db::open_at(tmp.path()).unwrap();
+        let tid = db.template_upsert("t", "Hi", "<p>Hi</p>").unwrap();
+        let list_id = db.list_create("news", None, "seg_lock").unwrap();
+        let bid = db
+            .broadcast_create("test-broadcast", tid, "list", list_id)
+            .unwrap();
+        (tmp, db, bid)
+    }
+
+    #[test]
+    fn lock_acquire_on_fresh_draft() {
+        let (_tmp, mut db, bid) = fresh_db_with_broadcast();
+        let result = db
+            .broadcast_try_acquire_send_lock(bid, 1234, chrono::Duration::minutes(30), false)
+            .unwrap();
+        assert!(matches!(result, LockAcquireResult::Acquired));
+        // Verify columns set.
+        let (pid, locked_at, status): (Option<i64>, Option<String>, String) = db
+            .conn
+            .query_row(
+                "SELECT locked_by_pid, locked_at, status FROM broadcast WHERE id = ?1",
+                params![bid],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(pid, Some(1234));
+        assert!(locked_at.is_some());
+        assert_eq!(status, "sending");
+    }
+
+    #[test]
+    fn lock_blocks_concurrent_acquire() {
+        let (_tmp, mut db, bid) = fresh_db_with_broadcast();
+        let r1 = db
+            .broadcast_try_acquire_send_lock(bid, 1234, chrono::Duration::minutes(30), false)
+            .unwrap();
+        assert!(matches!(r1, LockAcquireResult::Acquired));
+        let r2 = db
+            .broadcast_try_acquire_send_lock(bid, 5678, chrono::Duration::minutes(30), false)
+            .unwrap();
+        match r2 {
+            LockAcquireResult::AlreadyHeld { pid, .. } => assert_eq!(pid, 1234),
+            other => panic!("expected AlreadyHeld, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn lock_resume_by_same_pid() {
+        let (_tmp, mut db, bid) = fresh_db_with_broadcast();
+        db.broadcast_try_acquire_send_lock(bid, 1234, chrono::Duration::minutes(30), false)
+            .unwrap();
+        // Same PID re-acquires (resume case).
+        let r = db
+            .broadcast_try_acquire_send_lock(bid, 1234, chrono::Duration::minutes(30), false)
+            .unwrap();
+        assert!(matches!(r, LockAcquireResult::Acquired));
+    }
+
+    #[test]
+    fn lock_breaks_stale_after_threshold() {
+        let (_tmp, mut db, bid) = fresh_db_with_broadcast();
+        db.broadcast_try_acquire_send_lock(bid, 1234, chrono::Duration::minutes(30), false)
+            .unwrap();
+        // Backdate the lock to look 31 minutes old.
+        let stale = (chrono::Utc::now() - chrono::Duration::minutes(31)).to_rfc3339();
+        db.conn
+            .execute(
+                "UPDATE broadcast SET locked_at = ?1 WHERE id = ?2",
+                params![stale, bid],
+            )
+            .unwrap();
+        // Different PID tries — should break and take the lock.
+        let r = db
+            .broadcast_try_acquire_send_lock(bid, 5678, chrono::Duration::minutes(30), false)
+            .unwrap();
+        match r {
+            LockAcquireResult::BrokeStale { previous_pid, .. } => {
+                assert_eq!(previous_pid, 1234)
+            }
+            other => panic!("expected BrokeStale, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn lock_force_unlock_overrides_held_lock() {
+        let (_tmp, mut db, bid) = fresh_db_with_broadcast();
+        db.broadcast_try_acquire_send_lock(bid, 1234, chrono::Duration::minutes(30), false)
+            .unwrap();
+        let r = db
+            .broadcast_try_acquire_send_lock(bid, 5678, chrono::Duration::minutes(30), true)
+            .unwrap();
+        assert!(matches!(
+            r,
+            LockAcquireResult::Acquired | LockAcquireResult::BrokeStale { .. }
+        ));
+        // Verify the new PID now holds it.
+        let pid: Option<i64> = db
+            .conn
+            .query_row(
+                "SELECT locked_by_pid FROM broadcast WHERE id = ?1",
+                params![bid],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(pid, Some(5678));
+    }
+
+    #[test]
+    fn lock_cleared_on_send_complete() {
+        let (_tmp, mut db, bid) = fresh_db_with_broadcast();
+        db.broadcast_try_acquire_send_lock(bid, 1234, chrono::Duration::minutes(30), false)
+            .unwrap();
+        db.broadcast_set_status_and_clear_lock(bid, "sent", Some("2026-04-09T12:00:00Z"))
+            .unwrap();
+        let (pid, locked_at): (Option<i64>, Option<String>) = db
+            .conn
+            .query_row(
+                "SELECT locked_by_pid, locked_at FROM broadcast WHERE id = ?1",
+                params![bid],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert!(pid.is_none(), "locked_by_pid should be NULL after clear");
+        assert!(locked_at.is_none(), "locked_at should be NULL after clear");
     }
 
     // ─── v0.3.1: schema version safety check ──────────────────────────────

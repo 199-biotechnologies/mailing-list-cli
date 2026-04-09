@@ -43,10 +43,12 @@ pub struct PipelineResult {
 const CHUNK_SIZE: usize = 100;
 
 #[allow(dead_code)]
-pub fn send_broadcast(id: i64) -> Result<PipelineResult, AppError> {
+pub fn send_broadcast(id: i64, force_unlock: bool) -> Result<PipelineResult, AppError> {
     let config = Config::load()?;
     // v0.3: mut because the per-chunk transaction blocks need
-    // &mut Connection for conn.transaction().
+    // &mut Connection for conn.transaction(). v0.3.1: also needed for
+    // broadcast_try_acquire_send_lock which uses a BEGIN IMMEDIATE
+    // transaction.
     let mut db = Db::open()?;
     let cli = EmailCli::new(&config.email_cli.path, &config.email_cli.profile);
 
@@ -66,6 +68,46 @@ pub fn send_broadcast(id: i64) -> Result<PipelineResult, AppError> {
             suggestion: "Only draft, scheduled, or sending broadcasts can be sent".into(),
         });
     }
+
+    // v0.3.1: atomic lock acquire BEFORE any other work. Two simultaneous
+    // `broadcast send 1` invocations both used to flip draft→sending and
+    // double-send every recipient. Now exactly one acquires the lock; the
+    // other gets `broadcast_lock_held` (exit code 1, transient).
+    {
+        use crate::db::LockAcquireResult;
+        let pid = std::process::id() as i64;
+        let stale_after = chrono::Duration::minutes(30);
+        match db.broadcast_try_acquire_send_lock(id, pid, stale_after, force_unlock)? {
+            LockAcquireResult::Acquired => {
+                // Normal path. status was already flipped to 'sending' inside
+                // the acquire's UPDATE, so the explicit broadcast_set_status
+                // call further down is no longer needed.
+            }
+            LockAcquireResult::BrokeStale {
+                previous_pid,
+                locked_at,
+            } => {
+                eprintln!(
+                    "warning: breaking stale lock from pid {previous_pid} (locked_at {locked_at}, > 30 min ago)"
+                );
+            }
+            LockAcquireResult::AlreadyHeld {
+                pid: holder,
+                locked_at,
+            } => {
+                return Err(AppError::Transient {
+                    code: "broadcast_lock_held".into(),
+                    message: format!(
+                        "broadcast {id} is already being sent by process {holder}, started {locked_at}"
+                    ),
+                    suggestion: format!(
+                        "Wait for the other process to finish, OR if you're sure it died, run `broadcast send {id} --force-unlock`"
+                    ),
+                });
+            }
+        }
+    }
+
     let template = db
         .template_all()?
         .into_iter()
@@ -110,8 +152,9 @@ pub fn send_broadcast(id: i64) -> Result<PipelineResult, AppError> {
         .trim()
         .to_string();
 
-    // Mark sending
-    db.broadcast_set_status(id, "sending", None)?;
+    // v0.3.1: status is already 'sending' from broadcast_try_acquire_send_lock
+    // above. The old `db.broadcast_set_status(id, "sending", None)?;` line was
+    // redundant and has been removed.
 
     // 4. Suppression filter + insert pending broadcast_recipient rows.
     // v0.3: load the entire suppression list into an in-memory HashSet once
@@ -242,7 +285,9 @@ pub fn send_broadcast(id: i64) -> Result<PipelineResult, AppError> {
             ) {
                 Ok(r) => r,
                 Err(e) => {
-                    let _ = db.broadcast_set_status(id, "failed", None);
+                    // v0.3.1: clear the lock on failure so the broadcast can
+                    // be inspected / re-tried without lock confusion.
+                    let _ = db.broadcast_set_status_and_clear_lock(id, "failed", None);
                     let (code, msg) = match &e {
                         RenderError::UnresolvedAtSend(_) => (
                             "template_unresolved_placeholder",
@@ -324,14 +369,17 @@ pub fn send_broadcast(id: i64) -> Result<PipelineResult, AppError> {
         }
     }
 
-    // 10. Mark broadcast.status = 'sent' (or 'failed' if everything failed)
+    // 10. Mark broadcast.status = 'sent' (or 'failed' if everything failed).
+    // v0.3.1: clear the lock columns in the same UPDATE so subsequent
+    // `broadcast resume` / `broadcast send` invocations don't see a stale
+    // lock for a completed broadcast.
     let final_status = if failed_count == to_send.len() && !to_send.is_empty() {
         "failed"
     } else {
         "sent"
     };
     let now_rfc = chrono::Utc::now().to_rfc3339();
-    db.broadcast_set_status(id, final_status, Some(&now_rfc))?;
+    db.broadcast_set_status_and_clear_lock(id, final_status, Some(&now_rfc))?;
 
     Ok(PipelineResult {
         broadcast_id: id,

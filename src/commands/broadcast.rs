@@ -132,7 +132,7 @@ fn schedule(format: Format, args: BroadcastScheduleArgs) -> Result<(), AppError>
 }
 
 fn send(format: Format, args: BroadcastSendArgs) -> Result<(), AppError> {
-    let result = pipeline::send_broadcast(args.id)?;
+    let result = pipeline::send_broadcast(args.id, args.force_unlock)?;
     output::success(
         format,
         &format!("broadcast {} sent", args.id),

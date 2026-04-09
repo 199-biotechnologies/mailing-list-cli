@@ -235,4 +235,20 @@ pub const MIGRATIONS: &[(&str, &str)] = &[
             VALUES ('schema_version', 'v0.2.0', datetime('now'));
         "#,
     ),
+    // v0.3.1: broadcast send lock columns. Two simultaneous
+    // `mailing-list-cli broadcast send 1` invocations used to both flip
+    // draft → sending and double-send every recipient (sender domain
+    // reputation tanks within hours). Now broadcast_try_acquire_send_lock
+    // does atomic CAS via UPDATE...WHERE inside a BEGIN IMMEDIATE
+    // transaction, gated on these columns.
+    //
+    // Both columns are NULL on existing rows from v0.3.0 and earlier
+    // (backward compatible — NULL means "no current lock").
+    (
+        "0004_broadcast_locks",
+        r#"
+        ALTER TABLE broadcast ADD COLUMN locked_by_pid INTEGER;
+        ALTER TABLE broadcast ADD COLUMN locked_at TEXT;
+        "#,
+    ),
 ];

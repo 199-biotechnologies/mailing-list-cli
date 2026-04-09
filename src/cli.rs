@@ -462,6 +462,12 @@ pub struct BroadcastScheduleArgs {
 #[derive(Args, Debug)]
 pub struct BroadcastSendArgs {
     pub id: i64,
+    /// Force-acquire the send lock even if another process appears to hold
+    /// it. USE WITH CAUTION: only after confirming the other process is
+    /// truly dead (e.g., `ps aux | grep mailing-list-cli`). Risk: double-send
+    /// if the other process is still alive and rendering chunks.
+    #[arg(long)]
+    pub force_unlock: bool,
 }
 
 #[derive(Args, Debug)]
