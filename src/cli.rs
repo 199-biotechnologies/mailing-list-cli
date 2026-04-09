@@ -77,10 +77,15 @@ pub enum Command {
         #[command(subcommand)]
         action: EventAction,
     },
-    /// Analytics reports (per-broadcast, per-link, engagement, deliverability)
+    /// Analytics reports (per-broadcast, per-link, engagement, deliverability, revenue)
     Report {
         #[command(subcommand)]
         action: ReportAction,
+    },
+    /// Track revenue attributed to broadcasts (manual, Stripe CSV import)
+    Revenue {
+        #[command(subcommand)]
+        action: RevenueAction,
     },
 }
 
@@ -523,6 +528,10 @@ pub enum ReportAction {
     Engagement(ReportEngagementArgs),
     /// Show rolling-window bounce rate / complaint rate
     Deliverability(ReportDeliverabilityArgs),
+    /// Show revenue attributed to a broadcast or all broadcasts
+    Revenue(ReportRevenueArgs),
+    /// Show lifetime value per contact (highest-value subscribers)
+    Ltv(ReportLtvArgs),
 }
 
 #[derive(Args, Debug)]
@@ -549,4 +558,79 @@ pub struct ReportEngagementArgs {
 pub struct ReportDeliverabilityArgs {
     #[arg(long, default_value = "7")]
     pub days: i64,
+}
+
+#[derive(Args, Debug)]
+pub struct ReportRevenueArgs {
+    /// Filter to a specific broadcast (omit for all)
+    #[arg(long)]
+    pub broadcast_id: Option<i64>,
+    /// Output format: json (default) or csv
+    #[arg(long, default_value = "json")]
+    pub format: String,
+}
+
+#[derive(Args, Debug)]
+pub struct ReportLtvArgs {
+    /// Show the top N contacts by lifetime value
+    #[arg(long, default_value = "20")]
+    pub top: usize,
+    /// Window in days (0 = all time)
+    #[arg(long, default_value = "0")]
+    pub window_days: i64,
+}
+
+// ─── v0.4: Revenue tracking ─────────────────────────────────────────
+
+#[derive(Subcommand, Debug)]
+pub enum RevenueAction {
+    /// Manually record a revenue event attributed to a broadcast + contact
+    Add(RevenueAddArgs),
+    /// List recorded revenue events
+    #[command(visible_alias = "ls")]
+    List(RevenueListArgs),
+    /// Bulk-import revenue from a Stripe Checkout CSV export
+    Import(RevenueImportArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct RevenueAddArgs {
+    /// Amount in the smallest currency unit (e.g. cents for USD)
+    #[arg(long)]
+    pub amount_cents: i64,
+    /// ISO 4217 currency code (e.g. USD, EUR, GBP)
+    #[arg(long, default_value = "USD")]
+    pub currency: String,
+    /// Broadcast ID this revenue is attributed to
+    #[arg(long)]
+    pub broadcast_id: Option<i64>,
+    /// Contact ID this revenue is attributed to
+    #[arg(long)]
+    pub contact_id: Option<i64>,
+    /// Revenue source (manual, stripe, paypal, github_sponsors, etc.)
+    #[arg(long, default_value = "manual")]
+    pub source: String,
+    /// External ID from the source system (e.g. Stripe checkout session ID)
+    #[arg(long)]
+    pub external_id: Option<String>,
+    /// When the payment was made (RFC3339; defaults to now)
+    #[arg(long)]
+    pub paid_at: Option<String>,
+}
+
+#[derive(Args, Debug)]
+pub struct RevenueListArgs {
+    /// Filter to a specific broadcast
+    #[arg(long)]
+    pub broadcast_id: Option<i64>,
+    /// Maximum rows to return
+    #[arg(long, default_value = "50")]
+    pub limit: usize,
+}
+
+#[derive(Args, Debug)]
+pub struct RevenueImportArgs {
+    /// Path to Stripe Checkout CSV export
+    #[arg(long)]
+    pub from_stripe_csv: String,
 }

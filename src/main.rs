@@ -43,6 +43,7 @@ fn main() -> ExitCode {
         Command::Webhook { action } => commands::webhook::run(format, action),
         Command::Event { action } => commands::webhook::run_event(format, action),
         Command::Report { action } => commands::report::run(format, action),
+        Command::Revenue { action } => commands::revenue::run(format, action),
     };
 
     match result {

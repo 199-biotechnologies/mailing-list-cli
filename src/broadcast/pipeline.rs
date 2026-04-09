@@ -416,6 +416,8 @@ pub fn send_broadcast(id: i64, force_unlock: bool) -> Result<PipelineResult, App
                 "physical_address_footer": footer_html,
                 "current_year": chrono::Utc::now().format("%Y").to_string(),
                 "broadcast_id": id,
+                "broadcast_name": broadcast.name.clone(),
+                "contact_id": contact.id,
             });
             // STRICT MODE: unresolved placeholders + lint errors abort the
             // send before a single email goes out. This is the v0.2

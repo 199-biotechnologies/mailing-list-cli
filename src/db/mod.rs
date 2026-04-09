@@ -2131,6 +2131,172 @@ pub enum TypedFieldValue {
     Bool(bool),
 }
 
+/// v0.4: a row from the `revenue` table.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct RevenueRow {
+    pub id: i64,
+    pub broadcast_id: Option<i64>,
+    pub contact_id: Option<i64>,
+    pub amount_cents: i64,
+    pub currency: String,
+    pub source: String,
+    pub external_id: Option<String>,
+    pub paid_at: Option<String>,
+    pub recorded_at: String,
+}
+
+impl Db {
+    // ─── v0.4: Revenue tracking ──────────────────────────────────────────
+
+    /// Insert a revenue event. Idempotent on (source, external_id) when
+    /// external_id is non-NULL (UNIQUE constraint in migration 0006).
+    #[allow(dead_code, clippy::too_many_arguments)]
+    pub fn revenue_insert(
+        &self,
+        broadcast_id: Option<i64>,
+        contact_id: Option<i64>,
+        amount_cents: i64,
+        currency: &str,
+        source: &str,
+        external_id: Option<&str>,
+        paid_at: &str,
+    ) -> Result<i64, AppError> {
+        let now = chrono::Utc::now().to_rfc3339();
+        self.conn
+            .execute(
+                "INSERT INTO revenue (broadcast_id, contact_id, amount_cents, currency, source, external_id, paid_at, recorded_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![broadcast_id, contact_id, amount_cents, currency, source, external_id, paid_at, now],
+            )
+            .map_err(|e| {
+                let msg = e.to_string();
+                if msg.contains("UNIQUE constraint") {
+                    AppError::BadInput {
+                        code: "revenue_duplicate".into(),
+                        message: format!("duplicate revenue event (source={source}, external_id={external_id:?})"),
+                        suggestion: "This event was already imported".into(),
+                    }
+                } else {
+                    query_err(e)
+                }
+            })?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    /// List revenue events, optionally filtered by broadcast.
+    #[allow(dead_code)]
+    pub fn revenue_list(
+        &self,
+        broadcast_id: Option<i64>,
+        limit: usize,
+    ) -> Result<Vec<RevenueRow>, AppError> {
+        let (sql, has_filter) = if broadcast_id.is_some() {
+            (
+                "SELECT id, broadcast_id, contact_id, amount_cents, currency, source, external_id, paid_at, recorded_at
+                 FROM revenue WHERE broadcast_id = ?1 ORDER BY recorded_at DESC LIMIT ?2",
+                true,
+            )
+        } else {
+            (
+                "SELECT id, broadcast_id, contact_id, amount_cents, currency, source, external_id, paid_at, recorded_at
+                 FROM revenue ORDER BY recorded_at DESC LIMIT ?1",
+                false,
+            )
+        };
+        let mut stmt = self.conn.prepare(sql).map_err(query_err)?;
+        let map_row = |r: &rusqlite::Row<'_>| -> rusqlite::Result<RevenueRow> {
+            Ok(RevenueRow {
+                id: r.get(0)?,
+                broadcast_id: r.get(1)?,
+                contact_id: r.get(2)?,
+                amount_cents: r.get(3)?,
+                currency: r.get(4)?,
+                source: r.get(5)?,
+                external_id: r.get(6)?,
+                paid_at: r.get(7)?,
+                recorded_at: r.get(8)?,
+            })
+        };
+        if has_filter {
+            stmt.query_map(params![broadcast_id.unwrap(), limit as i64], map_row)
+                .map_err(query_err)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(query_err)
+        } else {
+            stmt.query_map(params![limit as i64], map_row)
+                .map_err(query_err)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(query_err)
+        }
+    }
+
+    /// Aggregate revenue for `report revenue`.
+    #[allow(dead_code)]
+    pub fn revenue_aggregate(&self, broadcast_id: Option<i64>) -> Result<(i64, i64), AppError> {
+        // Returns (total_cents, event_count)
+        let (sql, has_filter) = if broadcast_id.is_some() {
+            (
+                "SELECT COALESCE(SUM(amount_cents), 0), COUNT(*) FROM revenue WHERE broadcast_id = ?1",
+                true,
+            )
+        } else {
+            (
+                "SELECT COALESCE(SUM(amount_cents), 0), COUNT(*) FROM revenue",
+                false,
+            )
+        };
+        let result: (i64, i64) = if has_filter {
+            self.conn
+                .query_row(sql, params![broadcast_id.unwrap()], |r| {
+                    Ok((r.get(0)?, r.get(1)?))
+                })
+                .map_err(query_err)?
+        } else {
+            self.conn
+                .query_row(sql, [], |r| Ok((r.get(0)?, r.get(1)?)))
+                .map_err(query_err)?
+        };
+        Ok(result)
+    }
+
+    /// Top contacts by lifetime revenue (for `report ltv`).
+    #[allow(dead_code)]
+    pub fn revenue_ltv_top(
+        &self,
+        top: usize,
+        window_days: i64,
+    ) -> Result<Vec<(i64, String, i64)>, AppError> {
+        // Returns Vec<(contact_id, email, total_cents)>
+        let sql = if window_days > 0 {
+            format!(
+                "SELECT r.contact_id, c.email, SUM(r.amount_cents) as total
+                 FROM revenue r
+                 JOIN contact c ON c.id = r.contact_id
+                 WHERE r.contact_id IS NOT NULL
+                   AND r.paid_at >= datetime('now', '-{window_days} days')
+                 GROUP BY r.contact_id
+                 ORDER BY total DESC
+                 LIMIT {top}"
+            )
+        } else {
+            format!(
+                "SELECT r.contact_id, c.email, SUM(r.amount_cents) as total
+                 FROM revenue r
+                 JOIN contact c ON c.id = r.contact_id
+                 WHERE r.contact_id IS NOT NULL
+                 GROUP BY r.contact_id
+                 ORDER BY total DESC
+                 LIMIT {top}"
+            )
+        };
+        let mut stmt = self.conn.prepare(&sql).map_err(query_err)?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .map_err(query_err)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(query_err)
+    }
+}
+
 fn is_snake_case(s: &str) -> bool {
     !s.is_empty()
         && s.chars()

@@ -444,7 +444,28 @@ fn inject_utm_params(html: &str, data: &serde_json::Value) -> String {
                                 None => (url, ""),
                             };
                             let sep = if base.contains('?') { "&" } else { "?" };
-                            let new_url = format!("{base}{sep}{utm}{fragment}");
+                            let mut new_url = format!("{base}{sep}{utm}");
+
+                            // v0.4 (MON-2): inject client_reference_id on Stripe
+                            // payment links so the operator's Stripe webhook can
+                            // match payments back to broadcast + contact.
+                            let is_stripe = url_lower.starts_with("https://buy.stripe.com")
+                                || url_lower.starts_with("https://checkout.stripe.com");
+                            if is_stripe {
+                                let bid = data
+                                    .get("broadcast_id")
+                                    .and_then(|v| v.as_i64())
+                                    .unwrap_or(0);
+                                let cid =
+                                    data.get("contact_id").and_then(|v| v.as_i64()).unwrap_or(0);
+                                if bid > 0 || cid > 0 {
+                                    new_url.push_str(&format!(
+                                        "&client_reference_id=mlc_b{bid}_c{cid}"
+                                    ));
+                                }
+                            }
+
+                            new_url.push_str(fragment);
                             out.push_str(&tag[..url_start]);
                             out.push_str(&new_url);
                             out.push_str(&tag[url_start + url_len..]);
@@ -945,6 +966,32 @@ mod tests {
         assert!(
             !result.contains("utm_source"),
             "fragment-only links should not get UTM params: {result}"
+        );
+    }
+
+    #[test]
+    fn utm_injects_stripe_client_reference_id() {
+        let html = r#"<a href="https://buy.stripe.com/test_abc123">Buy</a>"#;
+        let data = serde_json::json!({"broadcast_id": 42, "contact_id": 7});
+        let result = inject_utm_params(html, &data);
+        assert!(
+            result.contains("client_reference_id=mlc_b42_c7"),
+            "Stripe links should get client_reference_id: {result}"
+        );
+        assert!(
+            result.contains("utm_source=mailing-list-cli"),
+            "Stripe links should ALSO get UTM params: {result}"
+        );
+    }
+
+    #[test]
+    fn utm_no_stripe_ref_on_non_stripe_links() {
+        let html = r#"<a href="https://example.com/buy">Buy</a>"#;
+        let data = serde_json::json!({"broadcast_id": 42, "contact_id": 7});
+        let result = inject_utm_params(html, &data);
+        assert!(
+            !result.contains("client_reference_id"),
+            "non-Stripe links should not get client_reference_id: {result}"
         );
     }
 

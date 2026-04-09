@@ -1,5 +1,6 @@
 use crate::cli::{
-    ReportAction, ReportDeliverabilityArgs, ReportEngagementArgs, ReportLinksArgs, ReportShowArgs,
+    ReportAction, ReportDeliverabilityArgs, ReportEngagementArgs, ReportLinksArgs, ReportLtvArgs,
+    ReportRevenueArgs, ReportShowArgs,
 };
 use crate::db::Db;
 use crate::error::AppError;
@@ -12,6 +13,8 @@ pub fn run(format: Format, action: ReportAction) -> Result<(), AppError> {
         ReportAction::Links(args) => links(format, args),
         ReportAction::Engagement(args) => engagement(format, args),
         ReportAction::Deliverability(args) => deliverability(format, args),
+        ReportAction::Revenue(args) => revenue(format, args),
+        ReportAction::Ltv(args) => ltv(format, args),
     }
 }
 
@@ -105,6 +108,63 @@ fn deliverability(format: Format, args: ReportDeliverabilityArgs) -> Result<(), 
         format,
         &format!("deliverability (last {} days)", args.days),
         json!({ "report": report }),
+    );
+    Ok(())
+}
+
+fn revenue(format: Format, args: ReportRevenueArgs) -> Result<(), AppError> {
+    let db = Db::open()?;
+    let (total_cents, event_count) = db.revenue_aggregate(args.broadcast_id)?;
+    let label = match args.broadcast_id {
+        Some(bid) => format!("revenue for broadcast {bid}"),
+        None => "revenue (all broadcasts)".to_string(),
+    };
+    output::success(
+        format,
+        &format!(
+            "{label}: ${:.2} from {event_count} event(s)",
+            total_cents as f64 / 100.0
+        ),
+        json!({
+            "broadcast_id": args.broadcast_id,
+            "total_cents": total_cents,
+            "total_formatted": format!("${:.2}", total_cents as f64 / 100.0),
+            "event_count": event_count,
+        }),
+    );
+    Ok(())
+}
+
+fn ltv(format: Format, args: ReportLtvArgs) -> Result<(), AppError> {
+    let db = Db::open()?;
+    let rows = db.revenue_ltv_top(args.top, args.window_days)?;
+    let entries: Vec<serde_json::Value> = rows
+        .iter()
+        .map(|(cid, email, total)| {
+            json!({
+                "contact_id": cid,
+                "email": email,
+                "total_cents": total,
+                "total_formatted": format!("${:.2}", *total as f64 / 100.0),
+            })
+        })
+        .collect();
+    let window_label = if args.window_days > 0 {
+        format!("last {} days", args.window_days)
+    } else {
+        "all time".to_string()
+    };
+    output::success(
+        format,
+        &format!(
+            "top {} contacts by lifetime value ({})",
+            args.top, window_label
+        ),
+        json!({
+            "top": args.top,
+            "window_days": args.window_days,
+            "contacts": entries,
+        }),
     );
     Ok(())
 }

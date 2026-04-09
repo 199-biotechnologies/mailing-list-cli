@@ -5,6 +5,7 @@ pub mod field;
 pub mod health;
 pub mod list;
 pub mod report;
+pub mod revenue;
 pub mod segment;
 pub mod skill;
 pub mod tag;
