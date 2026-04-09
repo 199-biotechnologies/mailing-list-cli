@@ -1394,6 +1394,58 @@ impl Db {
         Ok(set)
     }
 
+    /// GDPR Article 17 "Right to erasure" primitive. Deletes the contact
+    /// row (cascades to list_membership, contact_tag, contact_field_value,
+    /// broadcast_recipient, soft_bounce_count, optin_token via FOREIGN KEY
+    /// ON DELETE CASCADE) and inserts a suppression tombstone with
+    /// reason='gdpr_erasure' so that any future `contact add` of the same
+    /// email is blocked pre-send by the suppression filter.
+    ///
+    /// Runs inside a transaction: either all writes succeed or none do.
+    /// The suppression tombstone is inserted BEFORE the contact delete so
+    /// the row cannot be momentarily absent from both places.
+    pub fn contact_erase(&mut self, email: &str) -> Result<(), AppError> {
+        // Look up first so we return a clear error if the contact doesn't
+        // exist. (Erase is intentionally NOT idempotent via "if exists" —
+        // the agent needs to know if they typoed the email.)
+        if self.contact_get_by_email(email)?.is_none() {
+            return Err(AppError::BadInput {
+                code: "contact_not_found".into(),
+                message: format!("no contact with email '{email}'"),
+                suggestion: "Check the email spelling".into(),
+            });
+        }
+
+        let tx = self.conn.transaction().map_err(|e| AppError::Transient {
+            code: "tx_begin_failed".into(),
+            message: format!("begin erase transaction failed: {e}"),
+            suggestion: "Retry — the DB is probably busy".into(),
+        })?;
+
+        let now = chrono::Utc::now().to_rfc3339();
+        // 1. Insert the suppression tombstone BEFORE deleting the contact.
+        tx.execute(
+            "INSERT OR REPLACE INTO suppression (email, reason, suppressed_at, source_broadcast_id)
+             VALUES (?1, 'gdpr_erasure', ?2, NULL)",
+            rusqlite::params![email, now],
+        )
+        .map_err(query_err)?;
+
+        // 2. Delete the contact row. FK cascades handle all child tables.
+        tx.execute(
+            "DELETE FROM contact WHERE email = ?1 COLLATE NOCASE",
+            rusqlite::params![email],
+        )
+        .map_err(query_err)?;
+
+        tx.commit().map_err(|e| AppError::Transient {
+            code: "tx_commit_failed".into(),
+            message: format!("commit erase transaction failed: {e}"),
+            suggestion: "Retry — the DB is probably busy".into(),
+        })?;
+        Ok(())
+    }
+
     pub fn contact_set_status(&self, email: &str, status: &str) -> Result<(), AppError> {
         self.conn
             .execute(
@@ -2180,6 +2232,75 @@ mod tests {
         assert_eq!(delivered, 0);
         assert_eq!(complaint_rate, 0.0);
         assert_eq!(bounce_rate, 0.0);
+    }
+
+    #[test]
+    fn contact_erase_deletes_row_cascades_and_adds_gdpr_tombstone() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let mut db = Db::open_at(tmp.path()).unwrap();
+        let list_id = db.list_create("l", None, "seg_x").unwrap();
+        let cid = db
+            .contact_upsert("alice@example.com", Some("Alice"), None)
+            .unwrap();
+        db.contact_add_to_list(cid, list_id).unwrap();
+        let tag_id = db.tag_get_or_create("vip").unwrap();
+        db.contact_tag_add(cid, tag_id).unwrap();
+
+        // Erase.
+        db.contact_erase("alice@example.com").unwrap();
+
+        // Row is gone.
+        assert!(
+            db.contact_get_by_email("alice@example.com")
+                .unwrap()
+                .is_none(),
+            "contact row should be deleted"
+        );
+
+        // FK cascade dropped the contact_tag row.
+        let tag_count: i64 = db
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM contact_tag WHERE contact_id = ?1",
+                [cid],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(tag_count, 0);
+
+        // Cascade dropped the list_membership row too.
+        let lm_count: i64 = db
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM list_membership WHERE contact_id = ?1",
+                [cid],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(lm_count, 0);
+
+        // Suppression tombstone present with the GDPR reason.
+        let reason: String = db
+            .conn
+            .query_row(
+                "SELECT reason FROM suppression WHERE email = ?1 COLLATE NOCASE",
+                ["alice@example.com"],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(reason, "gdpr_erasure");
+
+        // The HashSet-based lookup picks it up too (integrates with Task 2).
+        let set = db.suppression_all_emails().unwrap();
+        assert!(set.contains("alice@example.com"));
+    }
+
+    #[test]
+    fn contact_erase_nonexistent_email_is_bad_input_error() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let mut db = Db::open_at(tmp.path()).unwrap();
+        let err = db.contact_erase("nobody@example.com").unwrap_err();
+        assert_eq!(err.code(), "contact_not_found");
     }
 
     #[test]

@@ -19,7 +19,32 @@ pub fn run(format: Format, action: ContactAction) -> Result<(), AppError> {
         ContactAction::Set(args) => set_field(format, &db, args),
         ContactAction::Show(args) => show_contact(format, &db, args),
         ContactAction::Import(args) => import(format, &mut db, &cli, args),
+        ContactAction::Erase(args) => erase(format, &mut db, args),
     }
+}
+
+fn erase(format: Format, db: &mut Db, args: crate::cli::ContactEraseArgs) -> Result<(), AppError> {
+    if !args.confirm {
+        return Err(AppError::BadInput {
+            code: "confirm_required".into(),
+            message: "`contact erase` requires --confirm because it is irreversible".into(),
+            suggestion: format!(
+                "Rerun with: mailing-list-cli contact erase {} --confirm",
+                args.email
+            ),
+        });
+    }
+    db.contact_erase(&args.email)?;
+    output::success(
+        format,
+        &format!("contact '{}' erased (GDPR Article 17)", args.email),
+        json!({
+            "email": args.email,
+            "suppression_reason": "gdpr_erasure",
+            "irreversible": true,
+        }),
+    );
+    Ok(())
 }
 
 fn import(

@@ -135,6 +135,20 @@ pub enum ContactAction {
     Show(ContactShowArgs),
     /// Bulk-import contacts from a CSV file
     Import(ContactImportArgs),
+    /// GDPR Article 17 erasure: atomically delete a contact + all owned
+    /// child rows and insert a `gdpr_erasure` suppression tombstone so
+    /// the address cannot be re-added without manual intervention.
+    /// Requires `--confirm` because the operation is irreversible.
+    Erase(ContactEraseArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct ContactEraseArgs {
+    /// Email address of the contact to erase
+    pub email: String,
+    /// Required confirmation flag — erase is irreversible
+    #[arg(long)]
+    pub confirm: bool,
 }
 
 #[derive(Args, Debug)]
