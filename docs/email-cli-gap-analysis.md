@@ -1,7 +1,7 @@
 # What `mailing-list-cli` needs from `email-cli`
 
 **Date:** 2026-04-07 (original) · 2026-04-08 (**all three asks fulfilled**)
-**Audience:** the team that maintains [`email-cli`](https://github.com/199-biotechnologies/email-cli)
+**Audience:** the team that maintains [`email-cli`](https://github.com/paperfoot/email-cli)
 **Purpose:** a focused list of what to add — and what *not* to add — so that `mailing-list-cli` can wrap a complete mailing-list workflow without doing any Resend HTTP itself.
 
 ## STATUS: FULFILLED in `email-cli` v0.6.2 (shipped 2026-04-08)

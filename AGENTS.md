@@ -28,7 +28,7 @@ What "production-grade" means in this codebase:
 
 ## Conventions
 
-This project follows the [agent-cli-framework](https://github.com/199-biotechnologies/agent-cli-framework) patterns:
+This project follows the [agent-cli-framework](https://github.com/paperfoot/agent-cli-framework) patterns:
 
 - Structured JSON output, auto-detected via `IsTerminal`
 - Semantic exit codes: `0` success, `1` transient (retry), `2` config (fix setup), `3` bad input, `4` rate limited
@@ -49,7 +49,7 @@ Returns a JSON manifest of every subcommand, every flag, every exit code. No doc
 
 ## Required dependency: email-cli
 
-`mailing-list-cli` does **not** talk to Resend directly. Every send, every audience operation, every event read goes through [`email-cli`](https://github.com/199-biotechnologies/email-cli), which is the sole Resend API client. Both binaries must be on `$PATH`.
+`mailing-list-cli` does **not** talk to Resend directly. Every send, every audience operation, every event read goes through [`email-cli`](https://github.com/paperfoot/email-cli), which is the sole Resend API client. Both binaries must be on `$PATH`.
 
 This split exists so neither tool has to do the other's job:
 

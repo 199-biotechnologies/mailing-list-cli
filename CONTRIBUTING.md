@@ -18,7 +18,7 @@ Three steps:
 
 ### Conventions
 
-- We follow the [agent-cli-framework](https://github.com/199-biotechnologies/agent-cli-framework) patterns. Read the framework README before adding new commands.
+- We follow the [agent-cli-framework](https://github.com/paperfoot/agent-cli-framework) patterns. Read the framework README before adding new commands.
 - All output respects `--json` and TTY auto-detection — no command writes plain text in piped mode.
 - Errors carry an actionable `suggestion` field. A suggestion that doesn't work is a P0 bug.
 - Exit codes are `0`, `1`, `2`, `3`, or `4`. Never invent new ones.

@@ -27,9 +27,9 @@
 
 ## 1. Overview
 
-`mailing-list-cli` is a single Rust binary that gives an AI agent (or a human at a terminal) a complete mailing list manager. It owns the orchestration layer — campaigns, segments, templates, suppression, double opt-in, A/B testing, analytics — while shelling out to its sister tool [`email-cli`](https://github.com/199-biotechnologies/email-cli) for every actual Resend API touchpoint. Two binaries, one job each.
+`mailing-list-cli` is a single Rust binary that gives an AI agent (or a human at a terminal) a complete mailing list manager. It owns the orchestration layer — campaigns, segments, templates, suppression, double opt-in, A/B testing, analytics — while shelling out to its sister tool [`email-cli`](https://github.com/paperfoot/email-cli) for every actual Resend API touchpoint. Two binaries, one job each.
 
-It follows the [agent-cli-framework](https://github.com/199-biotechnologies/agent-cli-framework) patterns: structured JSON output auto-detected via `IsTerminal`, semantic exit codes (`0`/`1`/`2`/`3`/`4`), self-describing `agent-info`, no interactive prompts, ever.
+It follows the [agent-cli-framework](https://github.com/paperfoot/agent-cli-framework) patterns: structured JSON output auto-detected via `IsTerminal`, semantic exit codes (`0`/`1`/`2`/`3`/`4`), self-describing `agent-info`, no interactive prompts, ever.
 
 ### 1.1 Goals
 

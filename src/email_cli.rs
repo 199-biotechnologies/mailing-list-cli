@@ -14,7 +14,7 @@ pub struct EmailCli {
     /// implicit (whatever profile is active in email-cli's database).
     /// For multi-profile operators, use the
     /// `email_cli_single_profile` health check to detect ambiguity.
-    /// Upstream issue tracking: please file against 199-biotechnologies/email-cli
+    /// Upstream issue tracking: please file against paperfoot/email-cli
     /// if this matters for your setup.
     pub profile: String,
     last_call: Mutex<Instant>,

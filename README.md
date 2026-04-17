@@ -23,7 +23,7 @@
 
 A single Rust binary that gives an AI agent (or a human at a terminal) a real mailing list to run. Campaigns, segments, A/B tests, click tracking, double opt-in, hard-bounce auto-suppression, one-click unsubscribe — all driven by JSON-emitting commands the agent can pick up without an MCP server, schema file, or browser dashboard.
 
-`mailing-list-cli` is the orchestration layer. It owns campaigns, segments, templates, suppression, double opt-in, A/B testing, and analytics. It does **not** talk to [Resend](https://resend.com) directly — every send, every audience operation, every webhook event flows through its sister tool [`email-cli`](https://github.com/199-biotechnologies/email-cli), which is the sole Resend API client. Two binaries, one job each.
+`mailing-list-cli` is the orchestration layer. It owns campaigns, segments, templates, suppression, double opt-in, A/B testing, and analytics. It does **not** talk to [Resend](https://resend.com) directly — every send, every audience operation, every webhook event flows through its sister tool [`email-cli`](https://github.com/paperfoot/email-cli), which is the sole Resend API client. Two binaries, one job each.
 
 Think Beehiiv or MailChimp, except it lives at `~/.local/bin/mailing-list-cli` and an agent uses it the same way you'd use `git`.
 
@@ -43,7 +43,7 @@ The existing options for an agent are bad:
 - **Resend's own dashboard** — fine for humans, but the Broadcasts API alone doesn't cover the full list-management surface (no bulk import, no programmatic suppression list, no double opt-in workflow, no A/B testing, no segments-by-engagement).
 - **MCP servers wrapping the above** — a 32× context overhead per call versus the same operation as a CLI command, and the agent has to learn a new tool schema for every platform.
 
-`mailing-list-cli` is the missing layer. It owns the campaign / segmentation / template / suppression / opt-in / A/B / analytics surface. For the actual SMTP-side work — sending, audience CRUD, webhook ingestion, Resend API authentication — it shells out to [`email-cli`](https://github.com/199-biotechnologies/email-cli). An agent runs `mailing-list-cli agent-info` once, learns every command, and gets to work.
+`mailing-list-cli` is the missing layer. It owns the campaign / segmentation / template / suppression / opt-in / A/B / analytics surface. For the actual SMTP-side work — sending, audience CRUD, webhook ingestion, Resend API authentication — it shells out to [`email-cli`](https://github.com/paperfoot/email-cli). An agent runs `mailing-list-cli agent-info` once, learns every command, and gets to work.
 
 ## Status
 
@@ -182,11 +182,11 @@ Three layers, each replaceable.
 - **Local SQLite** stores the things `email-cli` doesn't track: templates, campaign metadata, the suppression list, double opt-in tokens, segment definitions, engagement aggregates, and a mirror of recent events polled from `email-cli`.
 - **Plain HTML + hand-rolled `{{ var }}` substitution** for templates. v0.2 dropped MJML, Handlebars, css-inline, html2text, and the YAML frontmatter variable schema — all designed-for-humans safety nets that the agent-loop preview renders unnecessary. Merge tags are Mustache-style `{{ first_name }}` (HTML-escaped) with a hard-coded triple-brace allowlist for `{{{ unsubscribe_link }}}` and `{{{ physical_address_footer }}}`. The compile pipeline is ~500 lines of Rust across `src/template/{subst,render}.rs` with 14 runtime crate dependencies total.
 
-Built following the [agent-cli-framework](https://github.com/199-biotechnologies/agent-cli-framework) patterns: structured JSON output (auto-detected via `IsTerminal`), semantic exit codes (`0/1/2/3/4`), self-describing `agent-info`, no interactive prompts, ever.
+Built following the [agent-cli-framework](https://github.com/paperfoot/agent-cli-framework) patterns: structured JSON output (auto-detected via `IsTerminal`), semantic exit codes (`0/1/2/3/4`), self-describing `agent-info`, no interactive prompts, ever.
 
 ## Sister Project
 
-[`email-cli`](https://github.com/199-biotechnologies/email-cli) — the 1:1 messaging counterpart. Send, reply, draft, sync. Same conventions, same agent-friendly philosophy. Use both: `email-cli` for personal correspondence, `mailing-list-cli` for newsletters and campaigns.
+[`email-cli`](https://github.com/paperfoot/email-cli) — the 1:1 messaging counterpart. Send, reply, draft, sync. Same conventions, same agent-friendly philosophy. Use both: `email-cli` for personal correspondence, `mailing-list-cli` for newsletters and campaigns.
 
 ## Research
 
